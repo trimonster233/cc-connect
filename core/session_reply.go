@@ -71,14 +71,26 @@ func questionExcerpt(text string) string {
 
 func (e *Engine) formatSessionReply(reply SessionReply) (string, string) {
 	lines := strings.Split(strings.TrimRight(reply.Content, "\r\n \t"), "\n")
+	strippedUUID := false
 	for len(lines) > 0 {
 		last := strings.TrimSpace(lines[len(lines)-1])
 		if last != "" && strings.Trim(last, "*") != "UUID: "+reply.SessionID {
 			break
 		}
+		if last != "" {
+			strippedUUID = true
+		}
 		lines = lines[:len(lines)-1]
 	}
-	body := strings.Join(lines, "\n")
+	// Older replies may be repeated verbatim by the model or an old collector.
+	// Remove only an exact legacy footer for this same UUID and metadata;
+	// leave ordinary prose, code examples and other sessions untouched.
+	if strippedUUID && len(lines) >= 2 && reply.WorkDir != "" && reply.Model != "" &&
+		strings.TrimSpace(lines[len(lines)-2]) == "目录："+reply.WorkDir &&
+		strings.TrimSpace(lines[len(lines)-1]) == "模型："+reply.Model {
+		lines = lines[:len(lines)-2]
+	}
+	body := strings.TrimRight(strings.Join(lines, "\n"), "\r\n \t")
 	if question := questionExcerpt(reply.Question); question != "" {
 		body = "> " + e.i18n.Tf(MsgReplyQuestion, question) + "\n\n" + body
 	}

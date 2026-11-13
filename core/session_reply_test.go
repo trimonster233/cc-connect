@@ -75,6 +75,49 @@ func TestQuestionExcerpt_StripsQuoteAndLimitsUnicode(t *testing.T) {
 	}
 }
 
+func TestFormatSessionReply_RemovesMatchingLegacyFooterFromBody(t *testing.T) {
+	e := NewEngine("test", &stubAgent{}, nil, "", LangChinese)
+	reply := SessionReply{Content: "已执行并验证\n\n目录：/project\n模型：actual-model\nUUID: " + routingUUIDA, WorkDir: "/project", Model: "actual-model", SessionID: routingUUIDA}
+	body, footer := e.formatSessionReply(reply)
+	if body != "已执行并验证" || footer != "actual-model\n/project\nUUID: "+routingUUIDA {
+		t.Fatalf("body=%q footer=%q", body, footer)
+	}
+	reply.Content = "正文\n目录：/other-project\n模型：actual-model\nUUID: " + routingUUIDA
+	body, _ = e.formatSessionReply(reply)
+	if !strings.Contains(body, "目录：/other-project") {
+		t.Fatal("removed nonmatching prose")
+	}
+}
+
+func TestReplyPreview_ReportsLiveRendererWithoutSending(t *testing.T) {
+	p := &stubPlatformEngine{n: "test"}
+	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangChinese)
+	api := &APIServer{engines: map[string]*Engine{"test": e}, socketPath: "/tmp/example-api.sock"}
+	req := SendRequest{Project: "test", SessionKey: "test:owner", SessionReply: &SessionReply{Content: "preview", Model: "actual-model", WorkDir: "/project", SessionID: routingUUIDA}}
+	body, _ := json.Marshal(req)
+	rec := httptest.NewRecorder()
+	api.handleSend(rec, httptest.NewRequest(http.MethodPost, "/reply/preview", bytes.NewReader(body)))
+	var result struct {
+		Footer string `json:"footer"`
+		PID    int    `json:"pid"`
+		Format string `json:"format"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if rec.Code != 200 || result.PID != os.Getpid() || result.Format != "status-v1" || result.Footer != "actual-model\n/project\nUUID: "+routingUUIDA {
+		t.Fatalf("preview=%s", rec.Body.String())
+	}
+	if len(p.getSent()) != 0 {
+		t.Fatal("preview sent a message")
+	}
+	rec = httptest.NewRecorder()
+	api.handleSend(rec, httptest.NewRequest(http.MethodPost, "/reply/preview", strings.NewReader(`{"project":"test","message":"must not send"}`)))
+	if rec.Code != 400 || len(p.getSent()) != 0 {
+		t.Fatal("plain preview request reached the send path")
+	}
+}
+
 func TestHandleSend_SessionReplyRejectsIncompleteOrMixedPayload(t *testing.T) {
 	p := &stubPlatformEngine{n: "test"}
 	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)

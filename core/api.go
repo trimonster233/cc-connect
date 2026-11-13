@@ -91,6 +91,7 @@ func NewAPIServer(dataDir string) (*APIServer, error) {
 		maxAttachmentBytes: DefaultMaxAttachmentSize,
 	}
 	s.mux.HandleFunc("/send", s.handleSend)
+	s.mux.HandleFunc("/reply/preview", s.handleSend)
 	s.mux.HandleFunc("/sessions", s.handleSessions)
 	s.mux.HandleFunc("/cron/add", s.handleCronAdd)
 	s.mux.HandleFunc("/cron/list", s.handleCronList)
@@ -218,6 +219,10 @@ func (s *APIServer) handleSend(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
 		return
 	}
+	if r.URL.Path == "/reply/preview" && req.SessionReply == nil {
+		http.Error(w, "preview requires session_reply", http.StatusBadRequest)
+		return
+	}
 	if req.SessionReply == nil && req.Message == "" && strings.TrimSpace(req.TTSText) == "" && len(req.Images) == 0 && len(req.Files) == 0 && len(req.Audios) == 0 && len(req.Videos) == 0 {
 		http.Error(w, "message, tts_text, or attachment is required", http.StatusBadRequest)
 		return
@@ -254,11 +259,16 @@ func (s *APIServer) handleSend(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "session_reply requires content, valid session_id, session_key and cannot be mixed with other send options", http.StatusBadRequest)
 			return
 		}
+		if r.URL.Path == "/reply/preview" {
+			body, footer := engine.formatSessionReply(*req.SessionReply)
+			apiJSON(w, http.StatusOK, map[string]any{"body": body, "footer": footer, "format": "status-v1", "version": CurrentVersion, "pid": os.Getpid(), "socket": s.socketPath})
+			return
+		}
 		if err := engine.SendSessionReply(req.SessionKey, *req.SessionReply); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		apiJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+		apiJSON(w, http.StatusOK, map[string]any{"status": "ok", "format": "status-v1", "version": CurrentVersion, "pid": os.Getpid()})
 		return
 	}
 	workDir := req.WorkDir

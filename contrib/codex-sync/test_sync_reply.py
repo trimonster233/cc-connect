@@ -26,6 +26,7 @@ class ReplySyncTests(unittest.TestCase):
     def connection(self):
         conn = MagicMock()
         conn.getresponse.return_value.status = 200
+        conn.getresponse.return_value.read.return_value = b'{"status":"ok","format":"status-v1","version":"test-version","pid":123}'
         return conn
 
     def test_external_reply_is_forwarded_without_old_completion_notice(self):
@@ -34,6 +35,10 @@ class ReplySyncTests(unittest.TestCase):
             self.assertTrue(sync.forward(self.payload, self.config))
         body = json.loads(conn.request.call_args.args[2])
         self.assertEqual(body, {'project': 'test', 'session_key': 'test:owner', 'session_reply': {'content': '最终正文', 'question': '', 'work_dir': '', 'model': '', 'session_id': SID}})
+        receipt = json.loads((Path(self.temp.name) / 'reply-sync/deliveries.jsonl').read_text())
+        self.assertEqual(receipt['api_pid'], 123)
+        self.assertEqual(receipt['api_version'], 'test-version')
+        self.assertNotIn('最终正文', json.dumps(receipt, ensure_ascii=False))
 
     def test_existing_uuid_and_repeated_stop_are_not_duplicated(self):
         self.payload['last_assistant_message'] += '\n\nUUID: ' + SID

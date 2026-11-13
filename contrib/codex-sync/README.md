@@ -65,6 +65,24 @@ git pull --ff-only && python3 contrib/deploy.py --config /绝对路径/config.to
 - 重复消息：检查是否仍启用独立的旧完成通知。同步脚本会跳过桥接轮次，并按轮次和正文去重。
 - 权限审批没有同步：终端或编辑器审批转发当前未实现，最终回复同步不包含这项功能。
 
+### 版本正确但显示格式不符
+
+不要只检查磁盘上的 `cc-connect --version`。在仓库根目录运行只读诊断：
+
+```bash
+python3 contrib/diagnose.py --config /绝对路径/config.toml --project server-codex
+```
+
+非默认同步配置或服务名仍可用 `--sync-config`、`--service` 指定。诊断不会运行模型或发送飞书消息，也不会输出应用凭据。预览中的用量是明确标记的样例数据，不是真实消费。
+
+报告会同时检查实际运行进程的版本、同步所指向的 `data_dir`、钩子入口引用的源码路径，并调用实际 API 的 `/reply/preview` 获取正文和页脚。旧 API 返回 404 时不会降级成发送请求。
+
+- `api_reply_preview.footer` 是接收该同步请求的进程实际生成的页脚，`pid`、`version` 标识真实接收者。
+- `sync_target_matches_config=false` 表示钩子与机器人配置指向不同的项目或 API 数据目录。
+- `stop_hooks_total` 大于预期时，检查是否还有独立的旧推送钩子。
+- `last_delivery` 来自 `data_dir/reply-sync/deliveries.jsonl`，记录最近一次成功同步的 API PID、版本和格式，不保存问题或回复正文。
+- 预览正确、消息正文却仍含旧标签时，检查标签是否由模型写在正文里。核心会清理与当前 UUID、目录和模型完全匹配的旧页脚，不会猜测删除普通正文。
+
 ## 验收
 
 1. 飞书发起一个问题，确认回复包含问题摘要、正文、目录、模型和 UUID。
