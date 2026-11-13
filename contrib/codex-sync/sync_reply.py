@@ -130,21 +130,13 @@ def forward(payload, config):
     try:
         conn.request('POST', '/send', body, {'Content-Type': 'application/json'})
         response = conn.getresponse()
-        receipt = json.loads(response.read()) if response.status == 200 else None
+        response.read()
         if response.status != 200:
             raise RuntimeError('cc-connect reply sync HTTP ' + str(response.status))
     finally:
         conn.close()
     sent.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     sent.touch(mode=0o600)
-    # Keep proof of the actual receiver, without storing prompts or replies.
-    try:
-        fd = os.open(sent.parent / 'deliveries.jsonl', os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-        with os.fdopen(fd, 'a') as stream:
-            stream.write(json.dumps({'time': time.time(), 'session_id': sid, 'turn_id': payload.get('turn_id') or payload.get('turnId'),
-                                     'api_pid': receipt.get('pid'), 'api_version': receipt.get('version'), 'format': receipt.get('format')}) + '\n')
-    except OSError as exc:
-        print('codex-reply-sync: cannot record delivery receipt: ' + str(exc), file=sys.stderr)
     return True
 
 
