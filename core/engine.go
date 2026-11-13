@@ -561,6 +561,7 @@ type interactiveState struct {
 	platform                 Platform
 	replyCtx                 any
 	currentMessageID         string
+	currentQuestion          string
 	lastRecallProbeMessageID string
 	lastRecallProbeAt        time.Time
 	recallProbeInFlight      bool
@@ -4073,6 +4074,7 @@ func (e *Engine) processInteractiveMessageWith(p Platform, msg *Message, session
 	state.platform = p
 	state.replyCtx = msg.ReplyCtx
 	state.currentMessageID = msg.MessageID
+	state.currentQuestion = msg.Content
 	state.currentTurnUserMessageTimeMs = msg.UserMessageTimeMs
 	state.mu.Unlock()
 	stopRecallMonitor := e.startMessageRecallMonitor(interactiveKey)
@@ -6424,6 +6426,15 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				}
 			}
 			fullResponse = cleanResponse
+			if !isSilent && e.sessionRouting {
+				reply := sessionReplyMetadata(replyAgent, state.agentSession, workspaceDir)
+				reply.Content = cleanResponse
+				state.mu.Lock()
+				reply.Question = state.currentQuestion
+				state.mu.Unlock()
+				fullResponse, statusFooter = e.formatSessionReply(reply)
+				legacyStatusFooter = ""
+			}
 
 			turnDuration := time.Since(turnStart)
 			slog.Info("turn complete",
@@ -6468,7 +6479,9 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				// without leaking the marker, and skip the fallback send that
 				// would otherwise post the suppressed marker verbatim.
 				cardBody := fullResponse
-				if !isSilent && e.uuidFooter(state.agentSession) != "" {
+				if !isSilent && e.sessionRouting {
+					cardBody = appendReplyFooter(cardBody, statusFooter)
+				} else if !isSilent && e.uuidFooter(state.agentSession) != "" {
 					cardBody = appendReplyFooter(cardBody, e.uuidFooter(state.agentSession))
 				}
 				if isSilent {
@@ -6577,7 +6590,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 						return
 					}
 				}
-			} else if toolCount > 0 && segmentStart > 0 {
+			} else if toolCount > 0 && segmentStart > 0 && !e.sessionRouting {
 				// When tool calls happened and prior text was already surfaced in segments,
 				// only send the unsent remainder. When tool progress is hidden, tool events don't surface
 				// side-channel messages and segmentStart stays 0, so keep normal finalize flow.
@@ -6675,6 +6688,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				state.platform = queued.platform
 				state.replyCtx = queued.replyCtx
 				state.currentMessageID = queued.messageID
+				state.currentQuestion = queued.content
 				state.fromVoice = queued.fromVoice
 				state.currentTurnUserMessageTimeMs = queued.userMessageTimeMs
 				state.mu.Unlock()
@@ -7029,6 +7043,7 @@ func (e *Engine) drainPendingMessages(state *interactiveState, session *Session,
 		state.platform = queued.platform
 		state.replyCtx = queued.replyCtx
 		state.currentMessageID = queued.messageID
+		state.currentQuestion = queued.content
 		state.fromVoice = queued.fromVoice
 		state.currentTurnUserMessageTimeMs = queued.userMessageTimeMs
 		state.mu.Unlock()
@@ -8023,6 +8038,10 @@ func (e *Engine) buildReplyFooter(agent Agent, session AgentSession, workspaceDi
 // token counts aren't yet settled and a live-updating elapsed line creates
 // visual noise during streaming. Header status badge already signals "Working").
 func (e *Engine) composeRichStatusFooter(streaming bool, turnStart time.Time, agent Agent, session AgentSession, workspaceDir string) string {
+	if e.sessionRouting && !streaming {
+		_, footer := e.formatSessionReply(sessionReplyMetadata(agent, session, workspaceDir))
+		return footer
+	}
 	if !e.replyFooterEnabled {
 		if !streaming {
 			return e.uuidFooter(session)

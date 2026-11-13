@@ -33,7 +33,7 @@ class ReplySyncTests(unittest.TestCase):
         with patch.object(sync, 'UnixHTTPConnection', return_value=conn):
             self.assertTrue(sync.forward(self.payload, self.config))
         body = json.loads(conn.request.call_args.args[2])
-        self.assertEqual(body, {'project': 'test', 'session_key': 'test:owner', 'message': '最终正文\n\nUUID: ' + SID})
+        self.assertEqual(body, {'project': 'test', 'session_key': 'test:owner', 'session_reply': {'content': '最终正文', 'question': '', 'work_dir': '', 'model': '', 'session_id': SID}})
 
     def test_existing_uuid_and_repeated_stop_are_not_duplicated(self):
         self.payload['last_assistant_message'] += '\n\nUUID: ' + SID
@@ -42,7 +42,7 @@ class ReplySyncTests(unittest.TestCase):
             self.assertTrue(sync.forward(self.payload, self.config))
             self.assertFalse(sync.forward(self.payload, self.config))
         conn.request.assert_called_once()
-        self.assertEqual(json.loads(conn.request.call_args.args[2])['message'].count('UUID:'), 1)
+        self.assertEqual(json.loads(conn.request.call_args.args[2])['session_reply']['content'].count('UUID:'), 1)
 
     def test_bridge_turn_is_not_forwarded_twice(self):
         marker = Path(self.temp.name) / 'bridge-turns' / (SID + '.json')
@@ -90,8 +90,8 @@ class ReplySyncTests(unittest.TestCase):
         conn = self.connection()
         with patch.object(sync, 'UnixHTTPConnection', return_value=conn):
             self.assertTrue(sync.forward(self.payload, self.config))
-        text = json.loads(conn.request.call_args.args[2])['message']
-        self.assertEqual(text, '> 问题：请修改这个功能\n\n最终正文\n\n目录：/project/target\n模型：target-model\nUUID: ' + SID)
+        reply = json.loads(conn.request.call_args.args[2])['session_reply']
+        self.assertEqual(reply, {'content': '最终正文', 'question': '[Quoted message from Bot]:\nold answer\n\n\n请修改这个功能', 'work_dir': '/project/target', 'model': 'target-model', 'session_id': SID})
 
     def test_user_turn_metadata_works_before_turn_context(self):
         self.payload['transcript_path'] = str(self.transcript([
@@ -108,11 +108,6 @@ class ReplySyncTests(unittest.TestCase):
         ]))
         self.assertEqual(sync.turn_details(self.payload, self.config, SID), {'cwd': '', 'model': ''})
 
-    def test_reply_chain_is_not_repeated_in_question_excerpt(self):
-        chain = '--- Reply chain (3 messages) ---\nold conversation\n---\n\n当前问题\n第二行'
-        self.assertEqual(sync.question_excerpt(chain), '当前问题 第二行')
-        self.assertEqual(sync.question_excerpt('文' * 200), '文' * 180 + '…')
-        self.assertEqual(sync.question_excerpt('[label](url)'), r'\[label\](url)')
 
 
 if __name__ == '__main__':

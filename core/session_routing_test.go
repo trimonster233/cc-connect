@@ -12,6 +12,14 @@ import (
 const routingUUIDA = "11111111-1111-1111-1111-111111111111"
 const routingUUIDB = "22222222-2222-2222-2222-222222222222"
 
+func TestSetSessionRoutingEnabled_PreparesWorkspacePoolBeforeConcurrentTurns(t *testing.T) {
+	e := NewEngine("test", &stubAgent{}, nil, "", LangEnglish)
+	e.SetSessionRoutingEnabled(true)
+	if e.workspacePool == nil {
+		t.Fatal("workspace pool would be initialized while message goroutines read it")
+	}
+}
+
 type routingTestAgent struct {
 	name, dir string
 	known     map[string]AgentSessionInfo
@@ -20,6 +28,7 @@ type routingTestAgent struct {
 
 func (a *routingTestAgent) Name() string          { return a.name }
 func (a *routingTestAgent) GetWorkDir() string    { return a.dir }
+func (a *routingTestAgent) GetModel() string      { return "routing-model" }
 func (a *routingTestAgent) SetWorkDir(dir string) { a.dir = dir }
 func (a *routingTestAgent) Stop() error           { return nil }
 func (a *routingTestAgent) ResolveSession(_ context.Context, id string) (*AgentSessionInfo, error) {

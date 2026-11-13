@@ -1,96 +1,81 @@
-# 同步当前界面的最终回复到飞书
+# 统一最终回复与部署
 
-cc-connect 自动引用并回复飞书发起的问题。本钩子补充终端或编辑器发起的任务：通过本机 cc-connect API 转发最后一条正文，附本轮问题摘要、实际工作目录、模型和 UUID，不添加完成提醒或接续命令，不读取机器人密钥。
-
-问题和模型从对应轮次的本机会话记录中读取，避免串用其他轮次的信息。长问题截取前 180 个字符；已有引用链不会完整重复。缺少可靠元数据时省略对应字段。
-
-**需要“终端或编辑器发起任务，最终回复自动进飞书”时，本钩子必装。** clone 仓库、编译、填写机器人 `config.toml` 都不会自动安装或注册它。它只同步最终回复，不转发终端或编辑器的交互审批。
-
-## 1. 安装脚本
-
-在仓库根目录执行，需要 Python 3：
-
-```bash
-mkdir -p "$HOME/.local/share/cc-connect" "$HOME/.config/cc-connect"
-install -m 700 contrib/codex-sync/sync_reply.py "$HOME/.local/share/cc-connect/sync_reply.py"
-```
-
-## 2. 配置目标聊天
-
-创建 `~/.config/cc-connect/reply-sync.json`，填入新服务器自己的值：
-
-```json
-{
-  "data_dir": "/home/你的用户/.cc-connect/codex",
-  "project": "server-codex",
-  "session_key": "目标飞书会话的完整键"
-}
-```
-
-默认读取 `$CODEX_HOME/sessions`（未设置时为 `~/.codex/sessions`）；使用其他位置时，可在 JSON 中添加 `codex_home`。
-
-- `data_dir` 必须与正在运行的机器人 `config.toml` 中的 `data_dir` 一致。
-- `project` 必须与 `[[projects]].name` 一致。
-- `session_key` 是完整的平台聊天键，不是 Codex UUID，也不是单独的 OpenID。先在飞书给机器人发一条消息，从机器人 `message received` 日志的 `session=` 字段获取，例如 `feishu:oc_聊天ID:ou_用户ID`。不要复制带工作目录或 `:session:s1` 后缀的内部执行键。
-- 本配置只保存在服务器本地，并执行 `chmod 600 ~/.config/cc-connect/reply-sync.json`。
-
-## 3. 注册 Codex Stop 钩子
-
-下面的命令将新钩子合并到 `$CODEX_HOME/hooks.json`（默认 `~/.codex/hooks.json`），保留其他钩子，并为已有文件创建备份：
-
-```bash
-python3 - <<'PY'
-import json
-import os
-from pathlib import Path
-import shlex
-import shutil
-import sys
-import time
-
-home = Path.home()
-script = home / '.local/share/cc-connect/sync_reply.py'
-config = home / '.config/cc-connect/reply-sync.json'
-assert script.is_file() and config.is_file(), '先完成脚本安装和同步配置'
-values = json.loads(config.read_text())
-assert all(values.get(key) for key in ('data_dir', 'project', 'session_key'))
-codex_home = Path(os.environ.get('CODEX_HOME') or home / '.codex').expanduser()
-path = codex_home / 'hooks.json'
-path.parent.mkdir(parents=True, exist_ok=True)
-data = json.loads(path.read_text()) if path.exists() else {}
-if path.exists():
-    backup = path.with_name('hooks.before-reply-sync-' + str(time.time_ns()) + '.json')
-    shutil.copy2(path, backup)
-    backup.chmod(0o600)
-command = shlex.join([sys.executable, str(script), '--config', str(config)])
-stops = data.setdefault('hooks', {}).setdefault('Stop', [])
-if not any(hook.get('command') == command for group in stops for hook in group.get('hooks', [])):
-    stops.append({'hooks': [{'type': 'command', 'command': command, 'timeout': 10}]})
-temporary = path.with_name('hooks.json.reply-sync-tmp')
-temporary.write_text(json.dumps(data, ensure_ascii=False, indent=2) + '\n')
-temporary.chmod(0o600)
-temporary.replace(path)
-print('已注册最终回复同步钩子：', path)
-PY
-```
-
-需要支持 Stop 钩子的 Codex 版本。如果运行中的客户端或 App Server 未重新加载钩子配置，等当前任务结束后重启对应进程，再开始验收。
-
-钩子最终执行的命令形如：
+飞书发起、终端发起和编辑器发起的任务，统一由 cc-connect 核心格式化最终回复：
 
 ```text
-python3 /绝对路径/sync_reply.py --config /绝对路径/reply-sync.json
+> 问题：本轮问题摘要
+
+回复正文
+
+目录：/实际工作目录
+模型：实际模型名
+UUID: 完整会话UUID
 ```
 
-不要同时启用旧完成通知。脚本会跳过 cc-connect 发起的回合，并使用共享连接的轮次标记避免重复；重复 Stop 也会去重。其他回合只发往配置指定的聊天，不改变主会话。cc-connect 必须运行；转发失败会报错，不记录成功。
+长问题截取前 180 个字符，引用链不完整重复；缺少可靠元数据时省略对应字段。语言随项目配置。飞书发起的任务还会原生引用触发消息。卡片可保留本轮工具步骤，但问题、正文和身份页脚使用同一渲染逻辑。
 
-## 4. 验证
+钩子只收集数据并通过本机 `/send` API 的 `session_reply` 字段提交，**不再自行拼接任何展示格式**。不读取机器人密钥，不转发终端或编辑器的权限审批。
 
-1. 确认机器人已启动，`data_dir/run/api.sock` 存在。
-2. 在终端或编辑器发起一个新轮次，让它只回复一段测试文字。
-3. 确认目标飞书聊天收到正文，附本轮问题、目录、模型和 UUID。
-4. 再从飞书发起一个任务，确认只收到一次正常回复，没有钩子重复转发。
+## 首次部署
 
-没有送达时，检查 Codex 的钩子错误日志中的 `codex-reply-sync:`。API 连接失败检查 `data_dir` 和机器人是否运行；HTTP 错误检查项目名、目标聊天键及机器人日志。脚本不会因为有共享会话连接就自动启用。
+需要 Go 1.25+、Python 3.11+ 和 Linux systemd 用户服务。钩子执行本身兼容 Python 3.10；部署命令会优先使用本机已有的较新 Python。
 
-脚本测试：`python3 -m unittest discover -s contrib/codex-sync -v`。
+1. 在仓库的 `feat/session-routing` 分支填写机器人 `config.toml`，先启动管理目标会话的共享 Codex App Server。
+2. 尚未知道目标聊天键时，在仓库根目录执行：
+
+   ```bash
+   python3 contrib/deploy.py --config /绝对路径/config.toml --project server-codex --no-sync --restart
+   ```
+
+3. 向新飞书机器人发送一条消息。从机器人 `message received` 日志的 `session=` 字段获取完整聊天键，例如 `feishu:oc_聊天ID:ou_用户ID`。如果被拒绝访问，临时启用 debug 日志取得 OpenID，填入 `admin_from` 和 `allow_from` 后重新部署。
+4. 等机器人当前任务结束后，启用最终回复同步：
+
+   ```bash
+   python3 contrib/deploy.py --config /绝对路径/config.toml --project server-codex \
+     --sync-session 'feishu:oc_聊天ID:ou_用户ID' --restart
+   ```
+
+`session_key` 不是 Codex UUID、单独的 OpenID，或带目录和 `:session:s1` 后缀的内部执行键。已有同步配置时无需重复传 `--sync-session`；非默认配置位置可用 `--sync-config /路径/reply-sync.json`。
+
+部署命令会构建并原子更新二进制、保存本机同步配置、注册 Stop 钩子、安装 systemd 用户服务，并在指定 `--restart` 时重启桥接服务。默认服务名为 `cc-connect-server-codex.service`，可用 `--service` 指定已有的服务名。它不会停止共享 App Server。
+
+钩子入口是指向 Git 仓库源码的启动器，**不再复制一份需要手动更新的脚本源码**。旧托管入口也会转为启动器；其他用户钩子会保留。不要移动或删除部署所用的仓库目录，移动后需要重新执行部署命令。
+
+## 后续更新：一条命令
+
+在仓库根目录，等桥接任务结束后执行：
+
+```bash
+git pull --ff-only && python3 contrib/deploy.py --config /绝对路径/config.toml --project server-codex --restart
+```
+
+这会一起更新二进制和钩子。**仅 `git pull` 不代表正在运行的二进制已经更新。** 不带 `--restart` 时只安装文件，等待你稍后重启；`--no-sync` 只跳过本次同步安装，不会删除以前注册的同步钩子。
+
+已运行的 Codex 客户端或 App Server 若没有重新加载新增的钩子，需要等其任务结束后重载配置或重启。已有钩子启动器的后续源码更新不需要重新复制。
+
+## 本机配置与排错
+
+同步配置默认保存在 `config.toml` 的 `data_dir` 下的 `reply-sync.json`。部署命令会复用旧的 `~/.config/cc-connect/reply-sync.json`，或 `--sync-config` 指定的文件。配置包括实际 `data_dir`、项目名、完整目标聊天键和 `codex_home`，仅保存在服务器本地，权限 0600。
+
+`codex_home` 来自项目选项、`CODEX_HOME` 或默认 `~/.codex`。钩子按对应轮次从其中读取问题、目录和模型。cc-connect 必须运行，并提供 `data_dir/run/api.sock`。
+
+- 终端有回复但飞书没有：检查 Stop 钩子是否加载、聊天键是否正确，以及钩子日志中的 `codex-reply-sync:` 错误。
+- `/send` 返回 400：可能仍在运行不支持结构化回复的旧二进制，执行上述更新命令并重启。没有旧格式降级，避免悄悄发送另一套格式。
+- API 连接失败：检查 `data_dir` 与机器人运行状态。
+- 重复消息：检查是否仍启用独立的旧完成通知。同步脚本会跳过桥接轮次，并按轮次和正文去重。
+- 权限审批没有同步：终端或编辑器审批转发当前未实现，最终回复同步不包含这项功能。
+
+## 验收
+
+1. 飞书发起一个问题，确认回复包含问题摘要、正文、目录、模型和 UUID。
+2. 终端或编辑器发起新轮次，确认相同布局的最终回复进入指定聊天，且只发一次。
+3. 引用回复和 `/stop` 仍定位原 UUID，主会话不变。
+4. 完成一次 Git 更新和统一部署，再重复前两项，确认运行版本与仓库一致。
+
+测试：
+
+```bash
+python3 -m unittest discover -s contrib/codex-sync -v
+python3.12 -m unittest discover -s contrib/tests -v
+go test ./core/ -run 'TestCUJ_B3_ExternalAndInteractiveRepliesUseIdenticalFormat|TestFormatSessionReply'
+```

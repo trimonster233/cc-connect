@@ -48,18 +48,19 @@ type APIServer struct {
 // the dispatch layer in engine.go. See cc-connect internal task
 // t-20260615-cqjbk1.
 type SendRequest struct {
-	Project    string            `json:"project"`
-	SessionKey string            `json:"session_key"`
-	Message    string            `json:"message"`
-	WorkDir    string            `json:"work_dir,omitempty"`
-	CWD        string            `json:"cwd,omitempty"`
-	TTSText    string            `json:"tts_text,omitempty"`
-	Images     []ImageAttachment `json:"images,omitempty"`
-	Files      []FileAttachment  `json:"files,omitempty"`
-	Audios     []FileAttachment  `json:"audios,omitempty"`
-	Videos     []FileAttachment  `json:"videos,omitempty"`
-	AtUsers    []string          `json:"at_users,omitempty"`
-	AtAll      bool              `json:"at_all,omitempty"`
+	SessionReply *SessionReply     `json:"session_reply,omitempty"`
+	Project      string            `json:"project"`
+	SessionKey   string            `json:"session_key"`
+	Message      string            `json:"message"`
+	WorkDir      string            `json:"work_dir,omitempty"`
+	CWD          string            `json:"cwd,omitempty"`
+	TTSText      string            `json:"tts_text,omitempty"`
+	Images       []ImageAttachment `json:"images,omitempty"`
+	Files        []FileAttachment  `json:"files,omitempty"`
+	Audios       []FileAttachment  `json:"audios,omitempty"`
+	Videos       []FileAttachment  `json:"videos,omitempty"`
+	AtUsers      []string          `json:"at_users,omitempty"`
+	AtAll        bool              `json:"at_all,omitempty"`
 }
 
 // NewAPIServer creates an API server on a Unix socket.
@@ -217,7 +218,7 @@ func (s *APIServer) handleSend(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	if req.Message == "" && strings.TrimSpace(req.TTSText) == "" && len(req.Images) == 0 && len(req.Files) == 0 && len(req.Audios) == 0 && len(req.Videos) == 0 {
+	if req.SessionReply == nil && req.Message == "" && strings.TrimSpace(req.TTSText) == "" && len(req.Images) == 0 && len(req.Files) == 0 && len(req.Audios) == 0 && len(req.Videos) == 0 {
 		http.Error(w, "message, tts_text, or attachment is required", http.StatusBadRequest)
 		return
 	}
@@ -248,6 +249,18 @@ func (s *APIServer) handleSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if req.SessionReply != nil {
+		if req.Message != "" || req.WorkDir != "" || req.CWD != "" || req.TTSText != "" || len(req.Images)+len(req.Files)+len(req.Audios)+len(req.Videos)+len(req.AtUsers) > 0 || req.AtAll || req.SessionKey == "" || !IsSessionUUID(req.SessionReply.SessionID) || strings.TrimSpace(req.SessionReply.Content) == "" {
+			http.Error(w, "session_reply requires content, valid session_id, session_key and cannot be mixed with other send options", http.StatusBadRequest)
+			return
+		}
+		if err := engine.SendSessionReply(req.SessionKey, *req.SessionReply); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		apiJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+		return
+	}
 	workDir := req.WorkDir
 	if workDir == "" {
 		workDir = req.CWD

@@ -29,6 +29,15 @@ func SessionUUIDFromReply(text string) string {
 }
 
 func (e *Engine) SetSessionRoutingEnabled(enabled bool) {
+	// Prepare the pool before message goroutines can read it. Lazy creation
+	// during the first cross-directory quote races with an active main turn.
+	if enabled {
+		e.interactiveMu.Lock()
+		if e.workspacePool == nil {
+			e.workspacePool = newWorkspacePool(DefaultWorkspaceIdleTimeout)
+		}
+		e.interactiveMu.Unlock()
+	}
 	e.sessionRouting = enabled
 	for _, p := range e.platforms {
 		if routing, ok := p.(SessionReplyRoutingEnabler); ok {

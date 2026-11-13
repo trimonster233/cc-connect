@@ -31,8 +31,11 @@ package core
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -477,6 +480,38 @@ func TestCUJ_B3_GlobalUUIDAndQuotedReplyPreserveMain(t *testing.T) {
 	assertReply("quoted-A", routingUUIDA, dirA)
 	send("main-four", "")
 	assertReply("main-four", routingUUIDB, dirB)
+}
+
+func TestCUJ_B3_ExternalAndInteractiveRepliesUseIdenticalFormat(t *testing.T) {
+	e, p, send, dirA, _ := newRoutingJourney(t)
+	e.platforms = []Platform{&replySyncTestPlatform{p}}
+	send("/switch "+routingUUIDA, "")
+	send("compare-A", "")
+	native := awaitRoutingReply(t, p, "prompt=compare-A")
+	send("side-B", routingUUIDB)
+	awaitRoutingReply(t, p, "prompt=side-B")
+	req := SendRequest{Project: e.name, SessionKey: "test:owner", SessionReply: &SessionReply{
+		Content:  "backend=" + routingUUIDA + " directory=" + dirA + " prompt=compare-A",
+		Question: "compare-A", WorkDir: dirA, Model: "routing-model", SessionID: routingUUIDA,
+	}}
+	body, err := json.Marshal(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	api := &APIServer{engines: map[string]*Engine{e.name: e}}
+	rec := httptest.NewRecorder()
+	api.handleSend(rec, httptest.NewRequest(http.MethodPost, "/send", bytes.NewReader(body)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("send API: %d %s", rec.Code, rec.Body.String())
+	}
+	sent := p.getSent()
+	if external := sent[len(sent)-1]; external != native {
+		t.Fatalf("reply formats differ:\nnative: %s\nexternal: %s", native, external)
+	}
+	send("main-after-external", "")
+	if reply := awaitRoutingReply(t, p, "prompt=main-after-external"); !strings.Contains(reply, "UUID: "+routingUUIDA) {
+		t.Fatal(reply)
+	}
 }
 
 func TestCUJ_B3_BackendQueueAcknowledgementPreservesUUID(t *testing.T) {

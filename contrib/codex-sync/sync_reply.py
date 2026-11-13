@@ -69,38 +69,6 @@ def turn_details(payload, config, sid):
     return details
 
 
-def question_excerpt(text):
-    # Quote the new user request, not the entire quoted conversation chain.
-    if text.startswith('--- Reply chain ('):
-        _, separator, request = text.partition('\n---\n\n')
-        if separator:
-            text = request
-    elif text.startswith('[Quoted message from ') and '\n\n\n' in text:
-        text = text.rsplit('\n\n\n', 1)[-1]
-    text = ' '.join(text.split())
-    if len(text) > 180:
-        text = text[:180] + '…'
-    return re.sub(r'([\\`*_\[\]<>])', r'\\\1', text)
-
-
-def format_reply(reply, sid, details):
-    lines = reply.rstrip().splitlines()
-    # Replace an existing trailing UUID with a single consistent footer.
-    while lines and (not lines[-1].strip() or re.fullmatch(r'\*?UUID:\s*' + re.escape(sid) + r'\*?\s*', lines[-1])):
-        lines.pop()
-    text = '\n'.join(lines)
-    question = question_excerpt(details.get('question', ''))
-    if question:
-        text = '> 问题：' + question + '\n\n' + text
-    footer = []
-    if details.get('cwd'):
-        footer.append('目录：' + details['cwd'])
-    if details.get('model'):
-        footer.append('模型：' + details['model'])
-    footer.append('UUID: ' + sid)
-    return text + '\n\n' + '\n'.join(footer)
-
-
 def forward(payload, config):
     if os.environ.get('CC_PROJECT') or os.environ.get('CC_SESSION_KEY') or payload.get('stop_hook_active'):
         return False
@@ -122,8 +90,18 @@ def forward(payload, config):
     sent = data / 'reply-sync' / key
     if sent.exists():
         return False
-    text = format_reply(reply, sid, turn_details(payload, config, sid))
-    body = json.dumps({'project': config['project'], 'session_key': config['session_key'], 'message': text}, ensure_ascii=False).encode()
+    details = turn_details(payload, config, sid)
+    body = json.dumps({
+        'project': config['project'],
+        'session_key': config['session_key'],
+        'session_reply': {
+            'content': reply,
+            'question': details.get('question', ''),
+            'work_dir': details.get('cwd', ''),
+            'model': details.get('model', ''),
+            'session_id': sid,
+        },
+    }, ensure_ascii=False).encode()
     conn = UnixHTTPConnection(data / 'run/api.sock')
     try:
         conn.request('POST', '/send', body, {'Content-Type': 'application/json'})
