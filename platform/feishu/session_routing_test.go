@@ -31,6 +31,14 @@ func TestQuotedSessionID_OnlyTrustsOwnBotFooter(t *testing.T) {
 	}
 }
 
+func TestBuildReplyContent_PreservesPrebuiltFinalSessionCard(t *testing.T) {
+	card := buildRichCard(core.CardStatusDone, "", nil, "> 问题：test\n\nanswer", false, "目录：/project\n模型：model\nUUID: 11111111-1111-1111-1111-111111111111")
+	msgType, body := buildReplyContent(card)
+	if msgType != "interactive" || body != card {
+		t.Fatalf("prebuilt final card was rendered as text: %s %s", msgType, body)
+	}
+}
+
 func TestDispatchMessage_QuotedBotCardCarriesSessionUUID(t *testing.T) {
 	const id = "11111111-1111-1111-1111-111111111111"
 	card := buildRichCard(core.CardStatusDone, "", nil, "answer", false, "UUID: "+id)

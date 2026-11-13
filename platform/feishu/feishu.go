@@ -3814,6 +3814,11 @@ func detectMimeType(data []byte) string {
 }
 
 func buildReplyContent(content string) (msgType string, body string) {
+	// Final results built by the core are already valid card JSON. Passing
+	// them through markdown rendering would show JSON instead of the card.
+	if isCardJSON(content) {
+		return larkim.MsgTypeInteractive, content
+	}
 	// Feishu does not generate mention events for <at> tags in card/post
 	// messages sent by bots. Force MsgTypeText when a real mention is present
 	// (resolved to an <at user_id="..."> or <at id=...> tag) so Feishu

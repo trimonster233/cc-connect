@@ -64,7 +64,7 @@ def unit_text(repo, config, binary, home):
         return '"' + str(value).replace('\\', '\\\\').replace('"', '\\"').replace('%', '%%') + '"'
     return '\n'.join([
         '[Unit]', 'Description=CC Connect bridge', 'After=network-online.target', '',
-        '[Service]', 'Type=simple', 'WorkingDirectory=' + quote(repo),
+        '[Service]', 'Type=simple', 'WorkingDirectory=' + str(repo).replace('%', '%%'),
         'Environment=' + quote('PATH=' + str(home / '.local/bin') + ':/usr/local/bin:/usr/bin:/bin'),
         'ExecStart=' + quote(binary) + ' --config ' + quote(config),
         'Restart=on-failure', 'RestartSec=5', 'TimeoutStopSec=30', '',
@@ -118,6 +118,8 @@ def main():
     parser.add_argument('--restart', action='store_true', help='restart this bridge after its tasks have finished')
     parser.add_argument('--go', default=shutil.which('go'))
     args = parser.parse_args()
+    if args.restart:
+        subprocess.run(['systemctl', '--user', 'show-environment'], check=True, stdout=subprocess.DEVNULL)
     config = args.config.expanduser().resolve()
     parsed = tomllib.loads(config.read_text())
     projects = parsed.get('projects', [])
@@ -173,6 +175,9 @@ def main():
     unit = home / '.config/systemd/user' / (service + '.service')
     atomic_text(unit, unit_text(REPO, config, binary, home), 0o644)
     if args.restart:
+        verifier = shutil.which('systemd-analyze')
+        if verifier:
+            subprocess.run([verifier, '--user', 'verify', str(unit)], check=True)
         subprocess.run(['systemctl', '--user', 'stop', service + '.service'], check=False)
         stop_previous_bridge(data, config)
         subprocess.run(['systemctl', '--user', 'daemon-reload'], check=True)

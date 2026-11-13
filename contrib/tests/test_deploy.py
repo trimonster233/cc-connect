@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import os
+import shutil
 from pathlib import Path
 import subprocess
 import sys
@@ -58,8 +59,16 @@ class DeployTests(unittest.TestCase):
 
     def test_systemd_paths_are_quoted_without_shell_interpolation(self):
         text = deploy.unit_text(Path('/repo with spaces'), Path('/config%name'), Path('/bin/path'), self.home)
-        self.assertIn('WorkingDirectory="/repo with spaces"', text)
+        self.assertIn('WorkingDirectory=/repo with spaces', text)
         self.assertIn('--config "/config%%name"', text)
+
+    @unittest.skipUnless(shutil.which('systemd-analyze'), 'needs systemd unit verifier')
+    def test_generated_unit_accepts_working_directory_with_spaces(self):
+        repo = self.home / 'repo with spaces'
+        repo.mkdir()
+        unit = self.home / 'deployment-test.service'
+        unit.write_text(deploy.unit_text(repo, self.home / 'config.toml', Path('/usr/bin/true'), self.home))
+        subprocess.run(['systemd-analyze', '--user', 'verify', str(unit)], check=True, capture_output=True)
 
     @unittest.skipIf(sys.version_info < (3, 11), 'deployment TOML parsing needs Python 3.11+')
     def test_single_command_builds_binary_installs_hook_and_reuses_saved_target(self):

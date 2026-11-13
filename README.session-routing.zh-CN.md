@@ -23,9 +23,9 @@
 | 停止指定会话 | 引用目标消息发送 `/stop`，只停止该会话的机器人任务；不带引用则停止主会话 |
 | 多会话执行 | 不同 UUID 可独立执行；同一个 UUID 的任务依次处理 |
 | 接续正在使用的 Codex | 连接管理该会话的共享 App Server，避免另起进程导致写入冲突 |
-| 同步终端或编辑器的回复 | 可选钩子转发最终正文，附问题摘要、目录、模型和 UUID，不附加完成提醒 |
+| 同步终端或编辑器的回复 | 钩子提交最终正文及元数据，由核心生成统一回复，不附加完成提醒 |
 
-UUID 标识和跨目录查找支持 Codex、Claude Code；本文的共享服务连接和可选回复同步针对 Codex。
+UUID 标识和跨目录查找支持 Codex、Claude Code；本文的共享服务连接和外部回复同步针对 Codex。
 
 ## 使用示例
 
@@ -165,7 +165,7 @@ git pull --ff-only && python3 contrib/deploy.py --config /绝对路径/config.to
 - **共享连接**：使用 WebSocket 连接 Unix socket，也支持 `ws://`、`wss://`。恢复已有会话时保留其运行配置，不启动第二个会话写入进程。
 - **排队与事件匹配**：通过服务端队列和 `clientUserMessageId` 识别机器人提交，只转发对应轮次的结果。同一 UUID 忙时等待，不同 UUID 可以并行。
 - **断线处理**：重连后查询队列和历史恢复结果，不自动重新提交输入，避免工具重复执行。关闭机器人只断开连接；`/stop` 只取消机器人自己的提交。
-- **外部回复同步**：可选 Stop 钩子读取最终正文，经本机 `/send` API 发往配置指定的聊天，不改变主会话。
+- **外部回复同步**：Stop 钩子提交最终正文和元数据，经本机 `/send` API 进入同一个核心渲染函数，发往指定聊天，不改变主会话。
 
 主要代码位于：
 
@@ -175,7 +175,7 @@ git pull --ff-only && python3 contrib/deploy.py --config /绝对路径/config.to
 | `agent/codex/resolve_session.go`、`agent/claudecode/resolve_session.go` | 跨目录查找本机会话 |
 | `platform/feishu/session_routing.go`、`platform/feishu/feishu.go` | 引用链解析、身份校验及消息收发 |
 | `agent/codex/appserver_shared.go` | 共享连接、队列、轮次归属及断线恢复 |
-| `contrib/codex-sync/` | 可选的外部最终回复同步 |
+| `contrib/codex-sync/`、`contrib/deploy.py` | 外部最终回复数据采集、统一安装与更新 |
 
 ## 验证
 
