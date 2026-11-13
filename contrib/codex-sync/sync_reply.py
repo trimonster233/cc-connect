@@ -113,6 +113,7 @@ def forward(payload, config):
     details = turn_details(payload, config, sid)
     reply_data = {
         'content': reply,
+        'environment': config.get('environment', 'local'),
         'question': details.get('question', ''),
         'work_dir': details.get('cwd', ''),
         'model': details.get('model', ''),
@@ -125,8 +126,13 @@ def forward(payload, config):
         'project': config['project'],
         'session_key': config['session_key'],
         'session_reply': reply_data,
+        'source_turn_id': payload.get('turn_id') or payload.get('turnId'),
     }, ensure_ascii=False).encode()
-    conn = UnixHTTPConnection(data / 'run/api.sock')
+    if config.get('relay_dir'):
+        from spool import SpoolConnection
+        conn = SpoolConnection(config['relay_dir'])
+    else:
+        conn = UnixHTTPConnection(data / 'run/api.sock')
     try:
         conn.request('POST', '/send', body, {'Content-Type': 'application/json'})
         response = conn.getresponse()

@@ -3039,3 +3039,66 @@ type reasoningJourneyPlatform struct {
 func (p *reasoningJourneyPlatform) SetCardNavigationHandler(h CardNavigationHandler) {
 	p.navigation = h
 }
+
+func TestCUJ_P1_ExternalApprovalAdminOnly(t *testing.T) {
+	p := &stubPlatformEngine{n: "test"}
+	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	e.SetAdminFrom("owner")
+	pending := &externalApproval{sessionKey: "test:chat", decision: make(chan string, 1)}
+	e.externalApprovals.Store("request", pending)
+	for _, action := range []struct{ user, content string }{{"other", "/approval request allow"}, {"owner", "/approval request deny"}, {"owner", "/approval expired allow"}} {
+		e.ReceiveMessage(p, &Message{Platform: "test", SessionKey: "test:chat", UserID: action.user, Content: action.content, ReplyCtx: "ctx"})
+	}
+	sent := strings.Join(p.getSent(), "\n")
+	if !strings.Contains(strings.ToLower(sent), "admin") || !strings.Contains(sent, e.i18n.T(MsgPermissionDenied)) {
+		t.Fatalf("expected admin rejection and denial: %s", sent)
+	}
+}
+
+func TestCUJ_E1_EnvironmentSwitchPreservesLocalSession(t *testing.T) {
+	p := &stubPlatformEngine{n: "test"}
+	a := &environmentTestAgent{remote: &stubAgent{}}
+	e := NewEngine("test", a, []Platform{p}, "", LangEnglish)
+	e.sessions = NewSessionManager(filepath.Join(t.TempDir(), "sessions.json"))
+	e.SetAdminFrom("owner")
+	key := "test:owner"
+	e.sessions.GetOrCreateActive(key).SetAgentSessionID("local-uuid", "test")
+	for _, content := range []string{"/docker", "/docker dev", "/docker local"} {
+		e.ReceiveMessage(p, &Message{Platform: "test", SessionKey: key, UserID: "owner", Content: content, ReplyCtx: "ctx"})
+	}
+	sent := strings.Join(p.getSent(), "\n")
+	if !strings.Contains(sent, "dev") || !strings.Contains(sent, "local") {
+		t.Fatal(sent)
+	}
+	if e.sessions.GetOrCreateActive(key).GetAgentSessionID() != "local-uuid" {
+		t.Fatal("lost local selection")
+	}
+	if agent, _, err := e.selectedEnvironment(key); err != nil || agent != nil {
+		t.Fatalf("local restore failed: %v", err)
+	}
+}
+
+func TestCUJ_E2_QuoteOtherEnvironmentKeepsDefault(t *testing.T) {
+	dir := t.TempDir()
+	p := &stubPlatformEngine{n: "test"}
+	local := &routingTestAgent{name: "routing", dir: dir, known: map[string]AgentSessionInfo{routingUUIDA: {ID: routingUUIDA, WorkDir: dir}}}
+	remote := &routingTestAgent{name: "routing", dir: "/container/project", known: map[string]AgentSessionInfo{routingUUIDB: {ID: routingUUIDB, WorkDir: "/container/project"}}}
+	a := &crossEnvironmentAgent{routingTestAgent: local, remote: remote}
+	e := NewEngine("test", a, []Platform{p}, filepath.Join(dir, "sessions.json"), LangEnglish)
+	e.SetAdminFrom("owner")
+	e.SetSessionRoutingEnabled(true)
+	key := "test:owner"
+	e.sessions.GetOrCreateActive(key).SetAgentSessionID(routingUUIDA, "routing")
+	e.ReceiveMessage(p, &Message{Platform: "test", SessionKey: key, UserID: "owner", Content: "before-quote", ReplyCtx: "ctx"})
+	awaitRoutingReply(t, p, "before-quote")
+	e.ReceiveMessage(p, &Message{Platform: "test", SessionKey: key, UserID: "owner", Content: "remote-quote", ReplySessionID: routingUUIDB, QuotedReply: true, ReplyCtx: "ctx"})
+	reply := awaitRoutingReply(t, p, "remote-quote")
+	if !strings.Contains(reply, "backend="+routingUUIDB) || !strings.Contains(reply, "/container/project") {
+		t.Fatal(reply)
+	}
+	e.ReceiveMessage(p, &Message{Platform: "test", SessionKey: key, UserID: "owner", Content: "after-quote", ReplyCtx: "ctx"})
+	reply = awaitRoutingReply(t, p, "after-quote")
+	if !strings.Contains(reply, "backend="+routingUUIDA) {
+		t.Fatal(reply)
+	}
+}

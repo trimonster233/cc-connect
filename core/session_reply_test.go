@@ -109,3 +109,17 @@ func TestHandleSend_SessionReplyRejectsIncompleteOrMixedPayload(t *testing.T) {
 		t.Fatal("invalid reply was delivered")
 	}
 }
+
+func TestFormatSessionReply_EnvironmentRemainsBoundToOrigin(t *testing.T) {
+	e := NewEngine("test", &stubAgent{}, nil, "", LangChinese)
+	for _, environment := range []string{"local", "emodia"} {
+		_, footer := e.formatSessionReply(SessionReply{SessionID: routingUUIDA, Environment: environment})
+		label := environment
+		if label == "local" {
+			label = "本机"
+		}
+		if !strings.Contains(footer, "环境："+label) {
+			t.Fatalf("missing origin in footer: %s", footer)
+		}
+	}
+}

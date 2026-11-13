@@ -401,10 +401,12 @@ type Engine struct {
 	bannedWords []string
 	bannedMu    sync.RWMutex
 
-	disabledCmds map[string]bool
-	adminFrom    string           // comma-separated user IDs for privileged commands; "*" = all allowed users; "" = deny
-	userRoles    *UserRoleManager // nil = legacy mode (no per-user policies)
-	userRolesMu  sync.RWMutex     // protects userRoles, disabledCmds, and adminFrom
+	disabledCmds      map[string]bool
+	environments      environmentState
+	externalApprovals sync.Map
+	adminFrom         string           // comma-separated user IDs for privileged commands; "*" = all allowed users; "" = deny
+	userRoles         *UserRoleManager // nil = legacy mode (no per-user policies)
+	userRolesMu       sync.RWMutex     // protects userRoles, disabledCmds, and adminFrom
 
 	rateLimiter         *RateLimiter
 	outgoingRL          *OutgoingRateLimiter
@@ -1308,6 +1310,8 @@ func isPrivilegedCommandInvocation(cmdID string, args []string) bool {
 	}
 	sub := strings.ToLower(args[0])
 	switch cmdID {
+	case "mode":
+		return true
 	case "commands":
 		return matchSubCommand(sub, []string{
 			"list", "add", "addexec", "del", "delete", "rm", "remove",
@@ -3143,6 +3147,34 @@ func (e *Engine) handleMessage(p Platform, msg *Message) {
 	sessions := e.sessions
 	agent := e.agent
 	interactiveKey := msg.SessionKey
+	if e.handleEnvironmentCommand(p, msg, content) {
+		return
+	}
+	if envAgent, envSessions, err := e.selectedEnvironment(msg.SessionKey); err != nil {
+		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgError, err))
+		return
+	} else if envAgent != nil {
+		// Host filesystem and shell helpers must never silently execute on the
+		// host while the user has selected another execution environment.
+		command := strings.Fields(content)
+		if len(command) > 0 {
+			switch command[0] {
+			case "/shell", "/show", "/diff", "/dir", "/cron", "/timer", "/commands":
+				e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgError, fmt.Errorf("command is not supported in the selected execution environment")))
+				return
+			}
+			if strings.HasPrefix(content, "!") {
+				e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgError, fmt.Errorf("host shell shortcuts are disabled in a remote execution environment")))
+				return
+			}
+		}
+		agent = envAgent
+		sessions = envSessions
+		interactiveKey = e.routingBaseKey(msg.SessionKey, "", envSessions)
+		resolvedWorkspace = ""
+		wsSessions = nil
+	}
+
 	if resolvedWorkspace != "" && wsSessions != nil {
 		sessions = wsSessions
 		agent = wsAgent
@@ -3151,6 +3183,9 @@ func (e *Engine) handleMessage(p Platform, msg *Message) {
 
 	if e.sessionRouting {
 		interactiveKey = sessionRoutingKey(e.routingBaseKey(msg.SessionKey, resolvedWorkspace, sessions), sessions.GetOrCreateActive(msg.SessionKey))
+	}
+	if e.handleExternalApprovalResponse(p, msg, content) {
+		return
 	}
 	if len(msg.Images) == 0 && strings.HasPrefix(content, "/") {
 		if e.handleCommand(p, msg, content) {
@@ -7853,7 +7888,12 @@ func (e *Engine) cmdSwitch(p Platform, msg *Message, args []string) {
 		return
 	}
 	query := strings.TrimSpace(strings.Join(args, " "))
-	if e.sessionRouting && IsSessionUUID(query) {
+	envAgent, _, envErr := e.selectedEnvironment(msg.SessionKey)
+	if envErr != nil {
+		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgError, envErr))
+		return
+	}
+	if envAgent == nil && e.sessionRouting && IsSessionUUID(query) {
 		e.switchGlobalSession(p, msg, query)
 		return
 	}
@@ -10753,7 +10793,7 @@ func (e *Engine) reasoningUsage(efforts []string) string {
 }
 
 func (e *Engine) cmdMode(p Platform, msg *Message, args []string) {
-	agent, _, _, err := e.commandContext(p, msg)
+	agent, modeSessions, _, err := e.commandContext(p, msg)
 	if err != nil {
 		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgWsResolutionError, err))
 		return
@@ -10765,6 +10805,26 @@ func (e *Engine) cmdMode(p Platform, msg *Message, args []string) {
 		return
 	}
 
+	if manager, ok := agent.(SessionPermissionManager); ok {
+		id := modeSessions.GetOrCreateActive(msg.SessionKey).GetAgentSessionID()
+		if id != "" {
+			target := ""
+			if len(args) > 0 {
+				target = strings.ToLower(args[0])
+			}
+			actual, err := manager.SessionPermissionMode(e.ctx, id, target)
+			if err != nil {
+				e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgError, err))
+				return
+			}
+			if target != "" {
+				e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgModeChanged, actual))
+				return
+			}
+			e.replyWithCard(p, msg.ReplyCtx, e.renderSessionModeCard(msg.SessionKey))
+			return
+		}
+	}
 	if len(args) == 0 {
 		if !supportsCards(p) {
 			current := switcher.GetMode()
@@ -10807,7 +10867,7 @@ func (e *Engine) cmdMode(p Platform, msg *Message, args []string) {
 			e.replyWithButtons(p, msg.ReplyCtx, sb.String(), buttons)
 			return
 		}
-		e.replyWithCard(p, msg.ReplyCtx, e.renderModeCard())
+		e.replyWithCard(p, msg.ReplyCtx, e.renderSessionModeCard(msg.SessionKey))
 		return
 	}
 
@@ -12924,6 +12984,22 @@ func (e *Engine) handleCardNav(action string, sessionKey string) *Card {
 		return e.handleModelCardAction(args, sessionKey)
 	}
 
+	if prefix == "act" && cmd == "/mode" && args != "" {
+		agent, sessions := e.sessionContextForKey(sessionKey)
+		if manager, ok := agent.(SessionPermissionManager); ok {
+			id := sessions.GetOrCreateActive(sessionKey).GetAgentSessionID()
+			if id != "" {
+				if !e.isAdmin(extractUserID(sessionKey)) {
+					return e.simpleCard(e.i18n.T(MsgCardTitleMode), "red", e.i18n.Tf(MsgAdminRequired, "/mode"))
+				}
+				actual, err := manager.SessionPermissionMode(e.ctx, id, strings.ToLower(args))
+				if err != nil {
+					return e.simpleCard(e.i18n.T(MsgCardTitleMode), "red", e.i18n.Tf(MsgError, err))
+				}
+				return e.simpleCard(e.i18n.T(MsgCardTitleMode), "violet", actual+"\nUUID: "+id)
+			}
+		}
+	}
 	if prefix == "act" {
 		e.executeCardAction(cmd, args, sessionKey)
 	}
@@ -12937,7 +13013,7 @@ func (e *Engine) handleCardNav(action string, sessionKey string) *Card {
 		agent, _ := e.sessionContextForKey(sessionKey)
 		return e.renderReasoningCard(agent)
 	case "/mode":
-		return e.renderModeCard()
+		return e.renderSessionModeCard(sessionKey)
 	case "/lang":
 		return e.renderLangCard()
 	case "/status":
@@ -13155,11 +13231,8 @@ func (e *Engine) executeCardAction(cmd, args, sessionKey string) {
 			return
 		}
 		e.cleanupInteractiveState(interactiveKey)
-		// Mode change requires a new session to take effect
-		s := e.sessions.GetOrCreateActive(sessionKey)
-		s.SetAgentSessionID("", "")
-		s.ClearHistory()
-		e.sessions.Save()
+		// A mode preference must not discard an explicitly selected backend
+		// session. Shared sessions retain their server-side permissions.
 
 	case "/lang":
 		if args == "" {
@@ -17319,6 +17392,12 @@ func (e *Engine) commandContext(p Platform, msg *Message) (Agent, *SessionManage
 // the resolved workspace path for callers that need to forward it to
 // processInteractiveMessageWith (idle reaper bookkeeping, reply footer, etc).
 func (e *Engine) commandContextWithWorkspaceBase(p Platform, msg *Message) (Agent, *SessionManager, string, string, error) {
+	if agent, sessions, err := e.selectedEnvironment(msg.SessionKey); err != nil {
+		return nil, nil, "", "", err
+	} else if agent != nil {
+		return agent, sessions, e.routingBaseKey(msg.SessionKey, "", sessions), "", nil
+	}
+
 	if e.sessionRouting {
 		if dir := e.sendWorkDirForSession(msg.SessionKey); dir != "" {
 			agent, sessions, err := e.routingWorkspace(dir)
@@ -17350,6 +17429,10 @@ func (e *Engine) commandContextWithWorkspaceBase(p Platform, msg *Message) (Agen
 // sessionContextForKey resolves the agent and session manager for a sessionKey.
 // It uses existing workspace bindings and falls back to global context if unresolved.
 func (e *Engine) sessionContextForKey(sessionKey string) (Agent, *SessionManager) {
+	if agent, sessions, err := e.selectedEnvironment(sessionKey); err == nil && agent != nil {
+		return agent, sessions
+	}
+
 	if workspace := e.sendWorkDirForSession(sessionKey); workspace != "" {
 		if wsAgent, wsSessions, err := e.routingWorkspace(workspace); err == nil {
 			return wsAgent, wsSessions
@@ -18102,4 +18185,24 @@ func restoreActiveProviderFromSession(agent Agent, session *Session) {
 	}
 	slog.Info("restored active provider from session",
 		"session_id", session.ID, "provider", want)
+}
+
+func (e *Engine) renderSessionModeCard(key string) *Card {
+	agent, sessions := e.sessionContextForKey(key)
+	if manager, ok := agent.(SessionPermissionManager); ok {
+		id := sessions.GetOrCreateActive(key).GetAgentSessionID()
+		if id != "" {
+			actual, err := manager.SessionPermissionMode(e.ctx, id, "")
+			if err != nil {
+				return e.simpleCard(e.i18n.T(MsgCardTitleMode), "red", e.i18n.Tf(MsgError, err))
+			}
+			switcher := agent.(ModeSwitcher)
+			var opts []CardSelectOption
+			for _, mode := range switcher.PermissionModes() {
+				opts = append(opts, CardSelectOption{Text: mode.Key, Value: "act:/mode " + mode.Key})
+			}
+			return NewCard().Title(e.i18n.T(MsgCardTitleMode), "violet").Markdown(actual+"\nUUID: "+id).Select(e.i18n.T(MsgModeSelectPlaceholder), opts, "act:/mode "+actual).Build()
+		}
+	}
+	return e.renderModeCard()
 }

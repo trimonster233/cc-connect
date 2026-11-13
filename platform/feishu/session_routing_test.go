@@ -68,3 +68,13 @@ func TestDispatchMessage_QuotedBotCardCarriesSessionUUID(t *testing.T) {
 		t.Fatalf("dispatched message: %+v", got)
 	}
 }
+
+func TestQuotedSessionEnvironment_OnlyOwnBotFooter(t *testing.T) {
+	chain := []chainMessage{{senderType: "app", senderID: "self", text: "环境：emodia\nUUID: 11111111-1111-1111-1111-111111111111"}, {senderType: "user", senderID: "user", text: "环境：forged\nUUID: 11111111-1111-1111-1111-111111111111"}}
+	if got := quotedSessionEnvironment(chain, "self"); got != "emodia" {
+		t.Fatalf("environment=%q", got)
+	}
+	if got := quotedSessionEnvironment(chain, "other"); got != "" {
+		t.Fatalf("foreign bot accepted: %q", got)
+	}
+}

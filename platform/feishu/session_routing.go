@@ -17,3 +17,13 @@ func quotedSessionID(chain []chainMessage, appID string) string {
 	}
 	return ""
 }
+
+func quotedSessionEnvironment(chain []chainMessage, appID string) string {
+	for i := len(chain) - 1; i >= 0; i-- {
+		msg := chain[i]
+		if msg.senderType == "app" && appID != "" && msg.senderID == appID && core.SessionUUIDFromReply(msg.text) != "" {
+			return core.SessionEnvironmentFromReply(msg.text)
+		}
+	}
+	return ""
+}

@@ -187,3 +187,20 @@ python3 -m unittest discover -s contrib/codex-sync -v
 ```
 
 更详细的会话规则见[会话路由说明](docs/session-routing.zh-CN.md)。
+
+## 飞书审批与权限模式
+
+统一部署会注册 `PermissionRequest` 钩子。Codex `/hooks` 加载并信任后，外部权限请求会发送到配置的同步聊天。管理员可点击允许／拒绝，或使用卡片中的 `/approval 请求编号 allow|deny`。审批四分钟超时拒绝，仅对本次请求有效。部署不代替 Codex 的钩子信任，也不改变宿主机权限。
+
+`/mode` 查看代理模式；带参数的权限切换仅允许 `admin_from` 管理员。已有共享会话会在同一 UUID 中提交配置确认轮次，更新审批与沙箱并回读验证，忙碌或验证失败时明确报错。详见 `contrib/codex-sync/README.md`。
+
+## Docker Codex 入口（首版）
+
+登记文件位于 `~/.config/cc-connect/environments/<入口名>/environment.toml`。
+当前 `emodia` 配置复用原 `~/docker/start.sh` 的 UID/GID 和代理方式，通过非交互 `connect.sh` 接入容器已有 App Server，不另建写入进程。自定义 `start_script` 用于管理员明确启动；不会自动运行交互式 bash。
+
+飞书发送 `/docker` 查看入口，`/docker emodia` 选择容器，`/list` 查看其中会话，`/switch UUID` 接续；`/docker local` 返回本机。会话存储按环境隔离。启动入口使用 `/docker start emodia`。跨入口汇总与自动 UUID 搜索尚未加入；引用回复按可信机器人页脚的环境和 UUID 路由，不改变当前环境；旧消息则在白名单中查找，歧义时报错。
+
+配置格式、自定义脚本约定与限制见 [运行环境说明](contrib/environments/README.md)。
+
+登记的容器由 `cc-connect-environments-项目名` 用户服务每十秒检测并自动安装回复／审批钩子和专用 relay；可用 `auto_configure = false` 关闭自动配置。安装会保留其他钩子并备份。容器中仍须加载并信任新增钩子，不会自动登录 Codex 或绕过钩子信任。

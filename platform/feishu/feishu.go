@@ -1480,10 +1480,11 @@ func (p *Platform) dispatchImageBatchEntry(entry *imageBatchEntry) {
 	)
 	p.dispatchCoreMessage(&core.Message{
 		SessionKey: entry.sessionKey, Platform: p.platformName,
-		MessageID:      canonicalID,
-		ReplySessionID: entry.quoted.sessionID,
-		QuotedReply:    entry.quoted.hasParent,
-		UserID:         entry.userID, UserName: entry.userName, ChatName: entry.chatName,
+		MessageID:        canonicalID,
+		ReplySessionID:   entry.quoted.sessionID,
+		ReplyEnvironment: entry.quoted.environment,
+		QuotedReply:      entry.quoted.hasParent,
+		UserID:           entry.userID, UserName: entry.userName, ChatName: entry.chatName,
 		Content:           "",
 		ExtraContent:      entry.quoted.text,
 		OnAccepted:        entry.onAccepted,
@@ -2006,6 +2007,7 @@ func (p *Platform) dispatchMessageWithHistory(ctx context.Context, msgType, cont
 	historyText := p.formatGroupHistory(groupHistoryCtx)
 	dispatchCore := func(msg *core.Message) {
 		msg.ReplySessionID = quoted.sessionID
+		msg.ReplyEnvironment = quoted.environment
 		msg.QuotedReply = quoted.hasParent
 		if historyText != "" {
 			msg.ExtraContent = joinFeishuExtraContent(historyText, msg.ExtraContent)
@@ -2594,11 +2596,12 @@ type quotedFileMeta struct {
 }
 
 type quotedMessage struct {
-	sessionID string
-	hasParent bool
-	text      string
-	images    []core.ImageAttachment
-	files     []quotedFileMeta
+	environment string
+	sessionID   string
+	hasParent   bool
+	text        string
+	images      []core.ImageAttachment
+	files       []quotedFileMeta
 }
 
 // maxPendingGroupHistoryEntries bounds the per-scope in-memory buffer. The
@@ -2641,10 +2644,11 @@ func (p *Platform) fetchQuotedMessage(ctx context.Context, parentID string) quot
 		return quotedMessage{}
 	}
 	return quotedMessage{
-		sessionID: quotedSessionID(chain, p.appID),
-		text:      formatReplyChain(chain),
-		images:    collectReplyChainImages(chain),
-		files:     collectReplyChainFiles(chain),
+		sessionID:   quotedSessionID(chain, p.appID),
+		environment: quotedSessionEnvironment(chain, p.appID),
+		text:        formatReplyChain(chain),
+		images:      collectReplyChainImages(chain),
+		files:       collectReplyChainFiles(chain),
 	}
 }
 

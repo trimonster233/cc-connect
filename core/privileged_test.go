@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"strings"
 	"testing"
 )
@@ -104,3 +105,65 @@ func TestHandleCommand_CronAddexecBlocksNonAdmin(t *testing.T) {
 	}
 }
 
+func TestModeChangeRequiresAdmin(t *testing.T) {
+	if isPrivilegedCommandInvocation("mode", nil) {
+		t.Fatal("viewing modes must remain available")
+	}
+	for _, mode := range []string{"suggest", "full-auto", "yolo"} {
+		if !isPrivilegedCommandInvocation("mode", []string{mode}) {
+			t.Fatalf("mode %s must require admin", mode)
+		}
+		p := &stubPlatformEngine{n: "test"}
+		e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
+		e.SetAdminFrom("owner")
+		e.handleCommand(p, &Message{UserID: "other", Platform: "test", ReplyCtx: "rctx"}, "/mode "+mode)
+		sent := p.getSent()
+		if len(sent) == 0 || !strings.Contains(strings.ToLower(sent[0]), "admin") {
+			t.Fatalf("expected admin rejection: %#v", sent)
+		}
+	}
+}
+
+func TestModeCardAction_PreservesSelectedSessionAndHistory(t *testing.T) {
+	agent := &stubModelModeAgent{}
+	e := NewEngine("test", agent, nil, "", LangEnglish)
+	key := "test:owner"
+	session := e.sessions.GetOrCreateActive(key)
+	session.SetAgentSessionID("01a1d329-4c38-7a00-b363-0d16a8745138", "test")
+	session.AddHistory("user", "keep history")
+	e.executeCardAction("/mode", "yolo", key)
+	if got := session.GetAgentSessionID(); got != "01a1d329-4c38-7a00-b363-0d16a8745138" {
+		t.Fatalf("mode card discarded selected UUID: %q", got)
+	}
+	if session.HistoryLen() != 1 {
+		t.Fatal("mode card discarded history")
+	}
+}
+
+type permissionModeTestAgent struct {
+	stubModelModeAgent
+	id, target, actual string
+}
+
+func (a *permissionModeTestAgent) SessionPermissionMode(_ context.Context, id, mode string) (string, error) {
+	a.id = id
+	a.target = mode
+	return a.actual, nil
+}
+
+func TestModeCommand_UpdatesSelectedUUIDInsteadOfDefault(t *testing.T) {
+	p := &stubPlatformEngine{n: "test"}
+	a := &permissionModeTestAgent{actual: "full-auto"}
+	e := NewEngine("test", a, []Platform{p}, "", LangEnglish)
+	e.SetAdminFrom("owner")
+	key := "test:owner"
+	id := "01a1d329-4c38-7a00-b363-0d16a8745138"
+	e.sessions.GetOrCreateActive(key).SetAgentSessionID(id, "test")
+	e.cmdMode(p, &Message{SessionKey: key, UserID: "owner"}, []string{"full-auto"})
+	if a.id != id || a.target != "full-auto" {
+		t.Fatalf("updated wrong target: %q %q", a.id, a.target)
+	}
+	if e.sessions.GetOrCreateActive(key).GetAgentSessionID() != id {
+		t.Fatal("UUID changed")
+	}
+}

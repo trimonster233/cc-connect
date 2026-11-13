@@ -8,13 +8,14 @@ import (
 // SessionReply is the unformatted final result shared by interactive turns and
 // the local /send API. Collectors supply facts; the engine alone renders them.
 type SessionReply struct {
-	Content   string             `json:"content"`
-	Question  string             `json:"question,omitempty"`
-	WorkDir   string             `json:"work_dir,omitempty"`
-	Model     string             `json:"model,omitempty"`
-	SessionID string             `json:"session_id"`
-	Effort    string             `json:"effort,omitempty"`
-	Usage     *SessionReplyUsage `json:"usage,omitempty"`
+	Environment string             `json:"environment,omitempty"`
+	Content     string             `json:"content"`
+	Question    string             `json:"question,omitempty"`
+	WorkDir     string             `json:"work_dir,omitempty"`
+	Model       string             `json:"model,omitempty"`
+	SessionID   string             `json:"session_id"`
+	Effort      string             `json:"effort,omitempty"`
+	Usage       *SessionReplyUsage `json:"usage,omitempty"`
 }
 
 // SessionReplyUsage carries reported token facts across the local sync API.
@@ -101,6 +102,13 @@ func (e *Engine) formatSessionReply(reply SessionReply) (string, string) {
 	if reply.WorkDir != "" {
 		footer = append(footer, compactReplyFooterPath(reply.WorkDir))
 	}
+	if reply.Environment != "" {
+		label := reply.Environment
+		if label == "local" {
+			label = e.i18n.T(MsgEnvironmentLocal)
+		}
+		footer = append(footer, e.i18n.Tf(MsgEnvironmentFooter, label))
+	}
 	if IsSessionUUID(reply.SessionID) {
 		footer = append(footer, e.i18n.Tf(MsgSessionUUID, reply.SessionID))
 	}
@@ -109,6 +117,10 @@ func (e *Engine) formatSessionReply(reply SessionReply) (string, string) {
 
 func sessionReplyMetadata(agent Agent, session AgentSession, workspaceDir string) SessionReply {
 	reply := SessionReply{WorkDir: workspaceDir, Model: replyFooterModel(session, agent), Effort: replyFooterReasoningEffort(session, agent)}
+	reply.Environment = "local"
+	if source, ok := agent.(ExecutionEnvironment); ok {
+		reply.Environment = source.ExecutionEnvironment()
+	}
 	if usage := replyFooterSessionContextUsage(session); usage != nil {
 		used := usage.UsedTokens
 		if used <= 0 {
@@ -131,6 +143,9 @@ func sessionReplyMetadata(agent Agent, session AgentSession, workspaceDir string
 // SendSessionReply renders an externally collected result exactly like an
 // interactive final reply. It never switches or creates the main conversation.
 func (e *Engine) SendSessionReply(sessionKey string, reply SessionReply) error {
+	if reply.Environment == "" {
+		reply.Environment = "local"
+	}
 	if sessionKey == "" || !IsSessionUUID(reply.SessionID) || strings.TrimSpace(reply.Content) == "" {
 		return fmt.Errorf("session reply requires session_key, content, and a valid session_id")
 	}
@@ -151,4 +166,35 @@ func (e *Engine) SendSessionReply(sessionKey string, reply SessionReply) error {
 		return fmt.Errorf("send formatted session reply failed")
 	}
 	return nil
+}
+
+// SessionEnvironmentFromReply reads the last environment footer, never guesses
+// from a working directory. Callers must verify the quoted bot's identity.
+func SessionEnvironmentFromReply(text string) string {
+	lines := strings.Split(text, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(strings.Trim(lines[i], "*"))
+		for _, prefix := range []string{"Environment:", "环境：", "環境：", "Entorno:"} {
+			if !strings.HasPrefix(line, prefix) {
+				continue
+			}
+			value := strings.TrimSpace(strings.TrimPrefix(line, prefix))
+			switch value {
+			case "Local", "本机", "本機", "ローカル":
+				return "local"
+			}
+			fields := strings.Fields(value)
+			if len(fields) == 0 {
+				return ""
+			}
+			name := fields[0]
+			for _, r := range name {
+				if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '_' || r == '-') {
+					return ""
+				}
+			}
+			return name
+		}
+	}
+	return ""
 }

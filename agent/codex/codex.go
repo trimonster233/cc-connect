@@ -33,6 +33,8 @@ func init() {
 //   - "full-auto": --sandbox workspace-write + approval_policy=never
 //   - "yolo":      --dangerously-bypass-approvals-and-sandbox
 type Agent struct {
+	environmentName   string
+	environmentDir    string
 	workDir           string
 	model             string
 	reasoningEffort   string
@@ -54,6 +56,7 @@ type Agent struct {
 
 // New validates the Codex adapter options and resolves its CLI.
 func New(opts map[string]any) (core.Agent, error) {
+	environmentDir, _ := opts["environment_dir"].(string)
 	workDir, _ := opts["work_dir"].(string)
 	if workDir == "" {
 		workDir = "."
@@ -110,6 +113,7 @@ func New(opts map[string]any) (core.Agent, error) {
 	}
 
 	return &Agent{
+		environmentDir:    environmentDir,
 		workDir:           workDir,
 		model:             model,
 		reasoningEffort:   normalizeReasoningEffort(reasoningEffort),
@@ -570,7 +574,10 @@ func (a *Agent) StartSession(ctx context.Context, sessionID string) (core.AgentS
 	return newCodexSession(ctx, cliBin, cliExtraArgs, workDir, model, reasoningEffort, mode, sessionID, baseURL, extraEnv, provName, systemPrompt, appendPrompt)
 }
 
-func (a *Agent) ListSessions(_ context.Context) ([]core.AgentSessionInfo, error) {
+func (a *Agent) ListSessions(ctx context.Context) ([]core.AgentSessionInfo, error) {
+	if a.isRemoteEnvironment() {
+		return a.remoteSessions(ctx)
+	}
 	a.mu.RLock()
 	codexHome := a.codexHome
 	workDir := a.workDir
@@ -579,6 +586,9 @@ func (a *Agent) ListSessions(_ context.Context) ([]core.AgentSessionInfo, error)
 }
 
 func (a *Agent) GetSessionHistory(_ context.Context, sessionID string, limit int) ([]core.HistoryEntry, error) {
+	if a.isRemoteEnvironment() {
+		return nil, fmt.Errorf("codex: remote transcript history is not available through the local filesystem")
+	}
 	a.mu.RLock()
 	codexHome := a.codexHome
 	a.mu.RUnlock()
@@ -638,6 +648,9 @@ func (a *Agent) WorkspaceAgentOptions() map[string]any {
 	}
 	if a.codexHome != "" {
 		opts["codex_home"] = a.codexHome
+	}
+	if a.environmentDir != "" {
+		opts["environment_dir"] = a.environmentDir
 	}
 	return opts
 }

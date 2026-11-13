@@ -722,3 +722,23 @@ const (
 type PreviewStatusUpdater interface {
 	SetPreviewStatus(previewHandle any, status CardStatus)
 }
+
+// SessionPermissionManager reads or updates actual permissions of an existing
+// backend UUID. Empty mode reads; errors must not be presented as success.
+type SessionPermissionManager interface {
+	SessionPermissionMode(ctx context.Context, sessionID, mode string) (string, error)
+}
+
+// EnvironmentProvider exposes explicitly configured execution environments.
+type EnvironmentProvider interface {
+	EnvironmentNames() ([]string, error)
+	EnvironmentAgent(name string) (Agent, error)
+}
+
+// EnvironmentStarter runs an administrator-configured noninteractive startup.
+type EnvironmentStarter interface {
+	StartEnvironment(context.Context, string) error
+}
+
+// ExecutionEnvironment reports immutable origin metadata for reply footers.
+type ExecutionEnvironment interface{ ExecutionEnvironment() string }

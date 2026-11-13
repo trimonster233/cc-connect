@@ -47,6 +47,14 @@ def register_sync(repo, home, codex_home, sync_config):
             groups.append(dict(group, hooks=kept))
     groups.append({'hooks': [{'type': 'command', 'command': command, 'timeout': 10}]})
     hooks['hooks']['Stop'] = groups
+    approval_command = shlex.join([sys.executable, str(repo / 'contrib/codex-sync/approve.py'), '--config', str(sync_config)])
+    approval_groups = []
+    for group in hooks['hooks'].get('PermissionRequest', []):
+        kept = [hook for hook in group.get('hooks', []) if '/contrib/codex-sync/approve.py' not in hook.get('command', '')]
+        if kept:
+            approval_groups.append(dict(group, hooks=kept))
+    approval_groups.append({'hooks': [{'type': 'command', 'command': approval_command, 'timeout': 270}]})
+    hooks['hooks']['PermissionRequest'] = approval_groups
     atomic_text(path, json.dumps(hooks, ensure_ascii=False, indent=2) + '\n')
     # Existing running clients may retain an old command until their config
     # reloads. Keep those managed entrypoints forwarding to the same source.
@@ -172,6 +180,15 @@ def main():
     if not args.no_sync:
         atomic_text(sync_config, json.dumps(values, ensure_ascii=False, indent=2) + '\n')
         register_sync(REPO, home, codex_home, sync_config)
+        watcher_service = 'cc-connect-environments-' + project['name']
+        watcher_command = [sys.executable, str(REPO / 'contrib/environments/watch.py'), '--sync-config', str(sync_config)]
+        if options.get('environment_dir'):
+            watcher_command += ['--directory', str(Path(options['environment_dir']).expanduser().resolve())]
+        def systemd_quote(value):
+            return '"' + value.replace('\\', '\\\\').replace('"', '\\"').replace('%', '%%') + '"'
+        watcher_unit = '[Unit]\nDescription=CC Connect registered container setup\n[Service]\nExecStart=' + ' '.join(systemd_quote(v) for v in watcher_command) + '\nRestart=on-failure\nRestartSec=3\n[Install]\nWantedBy=default.target\n'
+        atomic_text(home / '.config/systemd/user' / (watcher_service + '.service'), watcher_unit, 0o644)
+
     unit = home / '.config/systemd/user' / (service + '.service')
     atomic_text(unit, unit_text(REPO, config, binary, home), 0o644)
     if args.restart:
@@ -182,6 +199,10 @@ def main():
         stop_previous_bridge(data, config)
         subprocess.run(['systemctl', '--user', 'daemon-reload'], check=True)
         subprocess.run(['systemctl', '--user', 'enable', '--now', service + '.service'], check=True)
+        if not args.no_sync:
+            subprocess.run(['systemctl', '--user', 'enable', '--now', watcher_service + '.service'], check=True)
+            subprocess.run(['systemctl', '--user', 'restart', watcher_service + '.service'], check=True)
+
         time.sleep(2)
         subprocess.run(['systemctl', '--user', 'is-active', '--quiet', service + '.service'], check=True)
         pid = subprocess.check_output(['systemctl', '--user', 'show', service + '.service', '-p', 'MainPID', '--value'], text=True).strip()

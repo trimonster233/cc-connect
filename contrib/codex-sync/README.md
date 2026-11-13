@@ -14,7 +14,7 @@ UUID: 完整会话UUID
 
 长问题截取前 180 个字符，引用链不完整重复。状态页脚固定为“模型 · effort · out/in/cw/cr · ctx”一行，目录和 UUID 各占一行；用户主目录压缩为 `~`。用量取对应轮次最新一次推理的统计，不取整个会话的累计总量；缺少可靠元数据时省略对应字段，不伪造用量。语言随项目配置。飞书发起的任务还会原生引用触发消息。卡片可保留本轮工具步骤，但问题、正文和身份页脚使用同一渲染逻辑。
 
-钩子只收集数据并通过本机 `/send` API 的 `session_reply` 字段提交，**不再自行拼接任何展示格式**。不读取机器人密钥，不转发终端或编辑器的权限审批。
+钩子只收集数据并通过本机 `/send` API 的 `session_reply` 字段提交，**不再自行拼接任何展示格式**。不读取机器人密钥，权限审批由单独的 PermissionRequest 钩子处理。
 
 ## 首次部署
 
@@ -63,7 +63,7 @@ git pull --ff-only && python3 contrib/deploy.py --config /绝对路径/config.to
 - `/send` 返回 400：可能仍在运行不支持结构化回复的旧二进制，执行上述更新命令并重启。没有旧格式降级，避免悄悄发送另一套格式。
 - API 连接失败：检查 `data_dir` 与机器人运行状态。
 - 重复消息：检查是否仍启用独立的旧完成通知。同步脚本会跳过桥接轮次，并按轮次和正文去重。
-- 权限审批没有同步：终端或编辑器审批转发当前未实现，最终回复同步不包含这项功能。
+- 权限审批没有同步：检查 PermissionRequest 钩子是否加载并信任，以及 admin_from 是否配置。
 
 ## 验收
 
@@ -79,3 +79,11 @@ python3 -m unittest discover -s contrib/codex-sync -v
 python3.12 -m unittest discover -s contrib/tests -v
 go test ./core/ -run 'TestCUJ_B3_ExternalAndInteractiveRepliesUseIdenticalFormat|TestFormatSessionReply'
 ```
+
+## 外部权限审批
+
+部署同时注册同步执行的 `PermissionRequest` 钩子。外部 Codex 请求审批时，钩子通过权限为 0600 的本机 socket 创建请求，并等待飞书管理员操作。卡片包含工具参数、目录、UUID 和允许／拒绝按钮；也可发送卡片中的 `/approval 请求编号 allow` 或 `/approval 请求编号 deny`。决定仅对该次请求有效，不授权之后的命令。
+
+仅 `admin_from` 管理员、在配置指定的聊天中可以操作。四分钟未处理、连接失败或异常响应均拒绝；重启会使旧请求失效。需要在 Codex `/hooks` 中加载并信任新增钩子。该钩子不会修改 Codex 沙箱或宿主机 Docker 权限，也不会绕过其他审批策略。
+
+`/mode` 查看模式，`/mode suggest` 等切换仅允许管理员。已有共享会话通过同一 UUID 提交配置确认轮次，应用实际审批策略和沙箱，再回读确认。忙碌时拒绝切换；失败不显示成功。配置确认轮次会留在历史中，不应执行工具或继续旧任务。

@@ -707,7 +707,21 @@ const (
 	MsgAgentRelayToolPrompt MsgKey = "agent_relay_tool_prompt"
 )
 
+const (
+	MsgEnvironmentTitle   MsgKey = "environment_title"
+	MsgEnvironmentLocal   MsgKey = "environment_local"
+	MsgEnvironmentSelect  MsgKey = "environment_select"
+	MsgEnvironmentCurrent MsgKey = "environment_current"
+)
+
+const MsgEnvironmentFooter MsgKey = "environment_footer"
+
 var messages = map[MsgKey]map[Language]string{
+	MsgEnvironmentFooter:  {LangEnglish: "Environment: %s", LangChinese: "环境：%s", LangTraditionalChinese: "環境：%s", LangJapanese: "環境：%s", LangSpanish: "Entorno: %s"},
+	MsgEnvironmentTitle:   {LangEnglish: "Execution environments", LangChinese: "运行环境", LangTraditionalChinese: "執行環境", LangJapanese: "実行環境", LangSpanish: "Entornos de ejecución"},
+	MsgEnvironmentLocal:   {LangEnglish: "Local", LangChinese: "本机", LangTraditionalChinese: "本機", LangJapanese: "ローカル", LangSpanish: "Local"},
+	MsgEnvironmentSelect:  {LangEnglish: "Select", LangChinese: "进入", LangTraditionalChinese: "進入", LangJapanese: "選択", LangSpanish: "Seleccionar"},
+	MsgEnvironmentCurrent: {LangEnglish: "Current", LangChinese: "当前", LangTraditionalChinese: "目前", LangJapanese: "現在", LangSpanish: "Actual"},
 	MsgStarting: {
 		LangEnglish:            "⏳ Processing...",
 		LangChinese:            "⏳ 处理中...",

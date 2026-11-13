@@ -39,13 +39,20 @@ type sharedAppServerTransport struct {
 type sharedAppServerAgentSession struct{ *appServerSession }
 
 func isSharedAppServerURL(raw string) bool {
-	return strings.HasPrefix(raw, "unix://") || strings.HasPrefix(raw, "ws://") || strings.HasPrefix(raw, "wss://")
+	return strings.HasPrefix(raw, "script://") || strings.HasPrefix(raw, "unix://") || strings.HasPrefix(raw, "ws://") || strings.HasPrefix(raw, "wss://")
 }
 
 func (s *appServerSession) dialSharedAppServer() (*websocket.Conn, error) {
 	endpoint := s.url
 	dialer := websocket.Dialer{HandshakeTimeout: 8 * time.Second}
-	if strings.HasPrefix(endpoint, "unix://") {
+	if strings.HasPrefix(endpoint, "script://") {
+		path := strings.TrimPrefix(endpoint, "script://")
+		if !filepath.IsAbs(path) {
+			return nil, fmt.Errorf("codex: connect script path must be absolute")
+		}
+		dialer.NetDialContext = func(ctx context.Context, _, _ string) (net.Conn, error) { return newCommandConn(s.ctx, path) }
+		endpoint = "ws://localhost/"
+	} else if strings.HasPrefix(endpoint, "unix://") {
 		path := strings.TrimPrefix(endpoint, "unix://")
 		if path == "" {
 			path = filepath.Join(resolveCodexHomeDir(s.codexHome), "app-server-control", "app-server-control.sock")

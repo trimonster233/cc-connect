@@ -124,6 +124,15 @@ func (e *Engine) resolveGlobalSession(id string) (Agent, *SessionManager, *Agent
 }
 
 func (e *Engine) routingBaseKey(sessionKey, workDir string, sessions *SessionManager) string {
+	e.environments.mu.Lock()
+	for name, instance := range e.environments.instances {
+		if instance.sessions == sessions {
+			e.environments.mu.Unlock()
+			return "environment:" + name + ":" + sessionKey
+		}
+	}
+	e.environments.mu.Unlock()
+
 	if sessions == e.sessions {
 		return sessionKey
 	}
@@ -189,7 +198,8 @@ func (e *Engine) resolveReplySession(p Platform, msg *Message) *replySessionRout
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgQuotedSessionUnknown))
 		return nil
 	}
-	agent, sessions, info, err := e.resolveGlobalSession(msg.ReplySessionID)
+	agent, sessions, info, err := e.resolveQuotedEnvironment(msg.ReplyEnvironment, msg.ReplySessionID)
+
 	if err != nil {
 		// Never silently send a failed quote resolution to the main session.
 		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgError, err))
@@ -306,4 +316,73 @@ func (e *Engine) routingDirApply(agent Agent, userKey string, args []string) (st
 		return "", e.i18n.Tf(MsgDirReset, dir)
 	}
 	return "", e.i18n.Tf(MsgDirChanged, dir)
+}
+
+// Quote routing searches registered origins without modifying the default route.
+func (e *Engine) resolveSessionAcrossEnvironments(id string) (Agent, *SessionManager, *AgentSessionInfo, error) {
+	type match struct {
+		agent    Agent
+		sessions *SessionManager
+		info     *AgentSessionInfo
+	}
+	var matches []match
+	if agent, sessions, info, err := e.resolveGlobalSession(id); err == nil {
+		matches = append(matches, match{agent, sessions, info})
+	}
+	if provider, ok := e.agent.(EnvironmentProvider); ok {
+		names, err := provider.EnvironmentNames()
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		for _, name := range names {
+			agent, sessions, err := e.environmentByName(name)
+			if err != nil {
+				continue
+			}
+			resolver, ok := agent.(GlobalSessionResolver)
+			if !ok {
+				continue
+			}
+			info, err := resolver.ResolveSession(e.ctx, id)
+			if err != nil {
+				continue
+			}
+			if info != nil && strings.EqualFold(info.ID, id) {
+				matches = append(matches, match{agent, sessions, info})
+			}
+		}
+	}
+	if len(matches) == 0 {
+		return nil, nil, nil, fmt.Errorf("%s", e.i18n.Tf(MsgSwitchNoMatch, id))
+	}
+	if len(matches) != 1 {
+		return nil, nil, nil, fmt.Errorf("session UUID has %d matching execution environments; quote routing requires exactly one", len(matches))
+	}
+	m := matches[0]
+	return m.agent, m.sessions, m.info, nil
+}
+
+func (e *Engine) resolveQuotedEnvironment(environment, id string) (Agent, *SessionManager, *AgentSessionInfo, error) {
+	if environment == "" {
+		return e.resolveSessionAcrossEnvironments(id)
+	}
+	if environment == "local" {
+		return e.resolveGlobalSession(id)
+	}
+	agent, sessions, err := e.environmentByName(environment)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	resolver, ok := agent.(GlobalSessionResolver)
+	if !ok {
+		return nil, nil, nil, fmt.Errorf("selected environment cannot resolve sessions")
+	}
+	info, err := resolver.ResolveSession(e.ctx, id)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	if info == nil {
+		return nil, nil, nil, fmt.Errorf("%s", e.i18n.Tf(MsgSwitchNoMatch, id))
+	}
+	return agent, sessions, info, nil
 }

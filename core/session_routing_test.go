@@ -128,7 +128,7 @@ func TestUUIDFooter_ShownWhenDisplayFooterDisabled(t *testing.T) {
 	e.SetReplyFooterEnabled(false)
 	s := &routingTestSession{id: routingUUIDA}
 	got := e.composeRichStatusFooter(false, time.Now(), e.agent, s, "")
-	if got != "UUID: "+routingUUIDA {
+	if got != "Environment: Local\nUUID: "+routingUUIDA {
 		t.Fatalf("got %q", got)
 	}
 }

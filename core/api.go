@@ -90,6 +90,7 @@ func NewAPIServer(dataDir string) (*APIServer, error) {
 		engines:            make(map[string]*Engine),
 		maxAttachmentBytes: DefaultMaxAttachmentSize,
 	}
+	s.mux.HandleFunc("/approval/request", s.handleExternalApproval)
 	s.mux.HandleFunc("/send", s.handleSend)
 	s.mux.HandleFunc("/sessions", s.handleSessions)
 	s.mux.HandleFunc("/cron/add", s.handleCronAdd)

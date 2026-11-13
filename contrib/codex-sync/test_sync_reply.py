@@ -33,7 +33,7 @@ class ReplySyncTests(unittest.TestCase):
         with patch.object(sync, 'UnixHTTPConnection', return_value=conn):
             self.assertTrue(sync.forward(self.payload, self.config))
         body = json.loads(conn.request.call_args.args[2])
-        self.assertEqual(body, {'project': 'test', 'session_key': 'test:owner', 'session_reply': {'content': '最终正文', 'question': '', 'work_dir': '', 'model': '', 'session_id': SID}})
+        self.assertEqual(body, {'project': 'test', 'session_key': 'test:owner', 'source_turn_id': 'turn', 'session_reply': {'content': '最终正文', 'environment': 'local', 'question': '', 'work_dir': '', 'model': '', 'session_id': SID}})
 
     def test_existing_uuid_and_repeated_stop_are_not_duplicated(self):
         self.payload['last_assistant_message'] += '\n\nUUID: ' + SID
@@ -91,7 +91,7 @@ class ReplySyncTests(unittest.TestCase):
         with patch.object(sync, 'UnixHTTPConnection', return_value=conn):
             self.assertTrue(sync.forward(self.payload, self.config))
         reply = json.loads(conn.request.call_args.args[2])['session_reply']
-        self.assertEqual(reply, {'content': '最终正文', 'question': '[Quoted message from Bot]:\nold answer\n\n\n请修改这个功能', 'work_dir': '/project/target', 'model': 'target-model', 'session_id': SID})
+        self.assertEqual(reply, {'content': '最终正文', 'environment': 'local', 'question': '[Quoted message from Bot]:\nold answer\n\n\n请修改这个功能', 'work_dir': '/project/target', 'model': 'target-model', 'session_id': SID})
 
     def test_user_turn_metadata_works_before_turn_context(self):
         self.payload['transcript_path'] = str(self.transcript([

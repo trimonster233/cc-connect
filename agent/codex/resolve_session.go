@@ -12,6 +12,18 @@ import (
 )
 
 func (a *Agent) ResolveSession(ctx context.Context, id string) (*core.AgentSessionInfo, error) {
+	if a.isRemoteEnvironment() {
+		sessions, err := a.remoteSessions(ctx)
+		if err != nil {
+			return nil, err
+		}
+		for _, info := range sessions {
+			if strings.EqualFold(info.ID, id) {
+				return &info, nil
+			}
+		}
+		return nil, nil
+	}
 	if !core.IsSessionUUID(id) {
 		return nil, nil
 	}
