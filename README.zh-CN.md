@@ -1,3 +1,5 @@
+> 本分支增加 UUID 会话路由和共享 Codex App Server 接入，见[部署说明](README.session-routing.zh-CN.md)。需要终端或编辑器的最终回复同步到飞书时，还必须[安装 Stop 同步钩子](contrib/codex-sync/README.md)。
+
 <p align="center">
   <img src="./docs/images/banner.svg" alt="CC-Connect Banner" width="800"/>
 </p>

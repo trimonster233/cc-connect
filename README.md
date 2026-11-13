@@ -1,3 +1,5 @@
+> This fork adds UUID session routing and shared Codex App Server support. See the [deployment guide](README.session-routing.zh-CN.md). Terminal/editor reply synchronization requires the separate [Stop hook installation](contrib/codex-sync/README.md).
+
 <p align="center">
   <img src="./docs/images/banner.svg" alt="CC-Connect Banner" width="800"/>
 </p>
