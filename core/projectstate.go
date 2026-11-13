@@ -12,6 +12,22 @@ type projectStateData struct {
 	WorkDirOverride         string            `json:"work_dir_override,omitempty"`
 	WorkspaceDirOverrides   map[string]string `json:"workspace_dir_overrides,omitempty"`
 	WorkspaceModelOverrides map[string]string `json:"workspace_model_overrides,omitempty"`
+	SessionWorkDirs         map[string]string `json:"session_work_dirs,omitempty"`
+}
+
+func (ps *ProjectStateStore) SessionWorkDir(key string) string {
+	ps.mu.RLock()
+	defer ps.mu.RUnlock()
+	return ps.state.SessionWorkDirs[key]
+}
+
+func (ps *ProjectStateStore) SetSessionWorkDir(key, dir string) {
+	ps.mu.Lock()
+	defer ps.mu.Unlock()
+	if ps.state.SessionWorkDirs == nil {
+		ps.state.SessionWorkDirs = make(map[string]string)
+	}
+	ps.state.SessionWorkDirs[key] = dir
 }
 
 // ProjectStateStore persists lightweight runtime state for one project.

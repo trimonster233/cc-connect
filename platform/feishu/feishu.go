@@ -152,6 +152,7 @@ type Platform struct {
 	respondToAtEveryoneAndHere bool
 	shareSessionInChannel      bool
 	threadIsolation            bool
+	sessionRouting             bool
 	groupChatHistoryShare      bool
 	// noReplyToTrigger: when true, send via Create instead of Im.Message.Reply (no quote to the user's message).
 	noReplyToTrigger bool
@@ -841,6 +842,12 @@ func (p *Platform) onCardAction(event *callback.CardActionTriggerEvent) (*callba
 		chatID = userID
 	}
 	sessionKey := p.sessionKeyFromCardAction(chatID, userID, event.Event.Action.Value)
+	callbackUUID := ""
+	if p.sessionRouting {
+		if id, _ := event.Event.Action.Value["session_uuid"].(string); core.IsSessionUUID(id) {
+			callbackUUID = id
+		}
+	}
 
 	// nav: / act: — synchronous card update
 	if strings.HasPrefix(actionVal, "nav:") || strings.HasPrefix(actionVal, "act:") {
@@ -928,6 +935,7 @@ func (p *Platform) onCardAction(event *callback.CardActionTriggerEvent) (*callba
 			Content:              responseText,
 			ReplyCtx:             rctx,
 			IsPermissionResponse: true,
+			ReplySessionID:       callbackUUID,
 		})
 
 		permLabel, _ := event.Event.Action.Value["perm_label"].(string)
@@ -952,11 +960,12 @@ func (p *Platform) onCardAction(event *callback.CardActionTriggerEvent) (*callba
 	if strings.HasPrefix(actionVal, "askq:") {
 		rctx := replyContext{messageID: messageID, chatID: chatID, sessionKey: sessionKey}
 		p.dispatchCardActionMessage(chatID, &core.Message{
-			SessionKey: sessionKey,
-			Platform:   p.platformName,
-			UserID:     userID,
-			Content:    actionVal,
-			ReplyCtx:   rctx,
+			SessionKey:     sessionKey,
+			Platform:       p.platformName,
+			UserID:         userID,
+			Content:        actionVal,
+			ReplySessionID: callbackUUID,
+			ReplyCtx:       rctx,
 		})
 
 		answerLabel, _ := event.Event.Action.Value["askq_label"].(string)
@@ -969,6 +978,9 @@ func (p *Platform) onCardAction(event *callback.CardActionTriggerEvent) (*callba
 			cb.Markdown(askqQuestion)
 		}
 		cb.Markdown("**→ " + answerLabel + "**")
+		if callbackUUID != "" {
+			cb.Markdown("UUID: " + callbackUUID)
+		}
 		return &callback.CardActionTriggerResponse{
 			Card: &callback.Card{
 				Type: "raw",
@@ -1468,8 +1480,10 @@ func (p *Platform) dispatchImageBatchEntry(entry *imageBatchEntry) {
 	)
 	p.dispatchCoreMessage(&core.Message{
 		SessionKey: entry.sessionKey, Platform: p.platformName,
-		MessageID: canonicalID,
-		UserID:    entry.userID, UserName: entry.userName, ChatName: entry.chatName,
+		MessageID:      canonicalID,
+		ReplySessionID: entry.quoted.sessionID,
+		QuotedReply:    entry.quoted.hasParent,
+		UserID:         entry.userID, UserName: entry.userName, ChatName: entry.chatName,
 		Content:           "",
 		ExtraContent:      entry.quoted.text,
 		OnAccepted:        entry.onAccepted,
@@ -1979,11 +1993,20 @@ func (p *Platform) dispatchMessageWithHistory(ctx context.Context, msgType, cont
 	// exception: earlier unmentioned messages were never dispatched to the
 	// agent, so bootstrap its context from the parent/root reply chain once.
 	var quoted quotedMessage
-	if parentID != "" && (!p.threadIsolation || !isThreadSessionKey(sessionKey) || rctx.bootstrapThread) {
+	includeQuote := !p.threadIsolation || !isThreadSessionKey(sessionKey) || rctx.bootstrapThread
+	if parentID != "" && (includeQuote || p.sessionRouting) {
 		quoted = p.fetchQuotedMessage(ctx, parentID)
+		quoted.hasParent = p.sessionRouting
+		if !includeQuote {
+			quoted.text = ""
+			quoted.images = nil
+			quoted.files = nil
+		}
 	}
 	historyText := p.formatGroupHistory(groupHistoryCtx)
 	dispatchCore := func(msg *core.Message) {
+		msg.ReplySessionID = quoted.sessionID
+		msg.QuotedReply = quoted.hasParent
 		if historyText != "" {
 			msg.ExtraContent = joinFeishuExtraContent(historyText, msg.ExtraContent)
 			msg.OnAccepted = groupHistoryCtx.onAccepted
@@ -2059,7 +2082,7 @@ func (p *Platform) dispatchMessageWithHistory(ctx context.Context, msgType, cont
 				userName:     userName,
 				chatName:     chatName,
 				rctx:         rctx,
-				quoted:       quotedMessage{text: historyText, images: quoted.images},
+				quoted:       quotedMessage{text: historyText, images: quoted.images, sessionID: quoted.sessionID, hasParent: quoted.hasParent},
 				onAccepted:   groupHistoryCtx.onAccepted,
 				images:       []core.ImageAttachment{{MimeType: mimeType, Data: imgData}},
 				messageIDs:   []string{messageID},
@@ -2571,9 +2594,11 @@ type quotedFileMeta struct {
 }
 
 type quotedMessage struct {
-	text   string
-	images []core.ImageAttachment
-	files  []quotedFileMeta
+	sessionID string
+	hasParent bool
+	text      string
+	images    []core.ImageAttachment
+	files     []quotedFileMeta
 }
 
 // maxPendingGroupHistoryEntries bounds the per-scope in-memory buffer. The
@@ -2616,9 +2641,10 @@ func (p *Platform) fetchQuotedMessage(ctx context.Context, parentID string) quot
 		return quotedMessage{}
 	}
 	return quotedMessage{
-		text:   formatReplyChain(chain),
-		images: collectReplyChainImages(chain),
-		files:  collectReplyChainFiles(chain),
+		sessionID: quotedSessionID(chain, p.appID),
+		text:      formatReplyChain(chain),
+		images:    collectReplyChainImages(chain),
+		files:     collectReplyChainFiles(chain),
 	}
 }
 

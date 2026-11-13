@@ -254,6 +254,7 @@ func parseCodexSessionFile(path, filterCwd string) *core.AgentSessionInfo {
 
 	return &core.AgentSessionInfo{
 		ID:           sessionID,
+		WorkDir:      sessionCwd,
 		Summary:      summary,
 		MessageCount: msgCount,
 		ModifiedAt:   stat.ModTime(),

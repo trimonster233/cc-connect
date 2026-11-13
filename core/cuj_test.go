@@ -454,6 +454,155 @@ func (env *cujEnv) activeSession(sessionKey string) *Session {
 // SessionManager. Complements TestSwitchToAgentSession_PreservesHistory.)
 // ===========================================================================
 
+func TestCUJ_B3_GlobalUUIDAndQuotedReplyPreserveMain(t *testing.T) {
+	_, p, send, dirA, dirB := newRoutingJourney(t)
+	assertReply := func(prompt, id, dir string) {
+		t.Helper()
+		text := awaitRoutingReply(t, p, "prompt="+prompt)
+		if !strings.Contains(text, "backend="+id) || !strings.Contains(text, "directory="+dir) || !strings.Contains(text, "UUID: "+id) {
+			t.Fatalf("incorrect user-visible session reply: %s", text)
+		}
+	}
+	send("/switch "+routingUUIDA, "")
+	send("main-one", "")
+	assertReply("main-one", routingUUIDA, dirA)
+	send("quoted-B", routingUUIDB)
+	assertReply("quoted-B", routingUUIDB, dirB)
+	send("main-two", "")
+	assertReply("main-two", routingUUIDA, dirA)
+	send("/switch "+routingUUIDB, "")
+	send("main-three", "")
+	assertReply("main-three", routingUUIDB, dirB)
+	send("quoted-A", routingUUIDA)
+	assertReply("quoted-A", routingUUIDA, dirA)
+	send("main-four", "")
+	assertReply("main-four", routingUUIDB, dirB)
+}
+
+func TestCUJ_B3_BackendQueueAcknowledgementPreservesUUID(t *testing.T) {
+	e, p, send, _, _ := newRoutingJourney(t)
+	send("/switch "+routingUUIDA, "")
+	send("backend-queued-side", routingUUIDB)
+	awaitRoutingReply(t, p, "prompt=backend-queued-side")
+	var acknowledged bool
+	for _, text := range p.getSent() {
+		if strings.Contains(text, e.i18n.T(MsgMessageQueued)) && strings.Contains(text, "UUID: "+routingUUIDB) {
+			acknowledged = true
+		}
+	}
+	if !acknowledged {
+		t.Fatal("missing queue acknowledgement with target UUID")
+	}
+	send("after-backend-queue", "")
+	if text := awaitRoutingReply(t, p, "prompt=after-backend-queue"); !strings.Contains(text, "UUID: "+routingUUIDA) {
+		t.Fatalf("backend queue changed main session: %s", text)
+	}
+}
+
+func TestCUJ_B3_UnknownQuotedUUIDNeverFallsBackToMain(t *testing.T) {
+	engine, p, send, _, dirB := newRoutingJourney(t)
+	send("/switch "+routingUUIDB, "")
+	send("before-invalid-quote", "")
+	awaitRoutingReply(t, p, "prompt=before-invalid-quote")
+	send("must-not-reach-main", "33333333-3333-3333-3333-333333333333")
+	awaitRoutingReply(t, p, "No session matching")
+	send("after-invalid-quote", "")
+	text := awaitRoutingReply(t, p, "prompt=after-invalid-quote")
+	if !strings.Contains(text, "backend="+routingUUIDB) || !strings.Contains(text, dirB) {
+		t.Fatal(text)
+	}
+	for _, text := range p.getSent() {
+		if strings.Contains(text, "prompt=must-not-reach-main") {
+			t.Fatal("unresolved quote was sent to main")
+		}
+	}
+	p.clearSent()
+	engine.ReceiveMessage(p, &Message{SessionKey: "test:owner", Platform: "test", UserID: "owner", Content: "missing quote metadata", QuotedReply: true, MessageID: "old-quote", ReplyCtx: "ctx"})
+	awaitRoutingReply(t, p, engine.i18n.T(MsgQuotedSessionUnknown))
+	send("after-missing-metadata", "")
+	if text := awaitRoutingReply(t, p, "prompt=after-missing-metadata"); !strings.Contains(text, "backend="+routingUUIDB) {
+		t.Fatal(text)
+	}
+}
+
+func TestCUJ_B3_GlobalUUIDSelectionSurvivesRestart(t *testing.T) {
+	e, p, send, _, dirB := newRoutingJourney(t)
+	send("/switch "+routingUUIDB, "")
+	send("before-restart", "")
+	awaitRoutingReply(t, p, "prompt=before-restart")
+	if err := e.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	p.clearSent()
+	restored := NewEngine(e.name, e.agent, []Platform{p}, e.sessions.StorePath(), LangEnglish)
+	restored.SetProjectStateStore(NewProjectStateStore(e.projectState.storePath))
+	restored.SetSessionRoutingEnabled(true)
+	restored.SetAdminFrom("owner")
+	t.Cleanup(func() { restored.Stop() })
+	restored.ReceiveMessage(p, &Message{SessionKey: "test:owner", Platform: "test", UserID: "owner", Content: "after-restart", MessageID: "restart-message", ReplyCtx: "ctx"})
+	text := awaitRoutingReply(t, p, "prompt=after-restart")
+	if !strings.Contains(text, "backend="+routingUUIDB) || !strings.Contains(text, "directory="+dirB) {
+		t.Fatal(text)
+	}
+	// A quote after restart must still leave the restored default unchanged.
+	restored.ReceiveMessage(p, &Message{SessionKey: "test:owner", Platform: "test", UserID: "owner", Content: "restart-quote-A", ReplySessionID: routingUUIDA, MessageID: "restart-quote", ReplyCtx: "ctx"})
+	awaitRoutingReply(t, p, "prompt=restart-quote-A")
+	restored.ReceiveMessage(p, &Message{SessionKey: "test:owner", Platform: "test", UserID: "owner", Content: "still-B", MessageID: "still-B", ReplyCtx: "ctx"})
+	if text := awaitRoutingReply(t, p, "prompt=still-B"); !strings.Contains(text, "backend="+routingUUIDB) {
+		t.Fatal(text)
+	}
+}
+
+func TestCUJ_B3_QuotedReplyWhileMainBusyKeepsQueuesIsolated(t *testing.T) {
+	for _, quoteTarget := range []string{routingUUIDA, routingUUIDB} {
+		t.Run(quoteTarget, func(t *testing.T) {
+			e, p, send, _, _ := newRoutingJourney(t)
+			gate := make(chan struct{})
+			var once sync.Once
+			release := func() { once.Do(func() { close(gate) }) }
+			t.Cleanup(release)
+			e.agent.(*routingTestAgent).blocks[routingUUIDA] = gate
+			send("/switch "+routingUUIDA, "")
+			send("held-main", "")
+			send("busy-quoted", quoteTarget)
+			if quoteTarget == routingUUIDB {
+				if text := awaitRoutingReply(t, p, "prompt=busy-quoted"); !strings.Contains(text, "backend="+routingUUIDB) {
+					t.Fatal(text)
+				}
+			} else {
+				awaitRoutingReply(t, p, e.i18n.T(MsgMessageQueued))
+			}
+			release()
+			awaitRoutingReply(t, p, "prompt=held-main")
+			if text := awaitRoutingReply(t, p, "prompt=busy-quoted"); !strings.Contains(text, "backend="+quoteTarget) {
+				t.Fatal(text)
+			}
+			send("main-after-busy", "")
+			if text := awaitRoutingReply(t, p, "prompt=main-after-busy"); !strings.Contains(text, "backend="+routingUUIDA) {
+				t.Fatal(text)
+			}
+		})
+	}
+}
+
+func TestCUJ_B3_DirectoryChangeDoesNotMutateOtherUUIDWorkspace(t *testing.T) {
+	_, p, send, dirA, dirB := newRoutingJourney(t)
+	send("/switch "+routingUUIDB, "")
+	send("before-dir", "")
+	awaitRoutingReply(t, p, "prompt=before-dir")
+	send("/dir "+dirA, "")
+	send("/switch "+routingUUIDB, "")
+	send("after-dir", "")
+	if text := awaitRoutingReply(t, p, "prompt=after-dir"); !strings.Contains(text, "directory="+dirB) {
+		t.Fatal(text)
+	}
+	send("/switch "+routingUUIDA, "")
+	send("back-A", "")
+	if text := awaitRoutingReply(t, p, "prompt=back-A"); !strings.Contains(text, "directory="+dirA) {
+		t.Fatal(text)
+	}
+}
+
 func TestCUJ_B3_SwitchPreservesHistoryEndToEnd(t *testing.T) {
 	env := newCUJEnv(t)
 	key := "test:alice"
@@ -1584,6 +1733,7 @@ func TestCUJ_C2_PlanModeRequiresApproval(t *testing.T) {
 
 // CUJ-C5 · /stop halts current turn but DOES NOT switch session.
 func TestCUJ_C5_StopKeepsSameSession(t *testing.T) {
+	t.Run("QuotedStopPreservesMainAndOtherExecution", testCUJQuotedStop)
 	env := newCUJEnv(t)
 	key := "test:c5"
 	env.userSends("c5", "hello")
@@ -1596,6 +1746,64 @@ func TestCUJ_C5_StopKeepsSameSession(t *testing.T) {
 
 	if env.activeSession(key).ID != oldID {
 		t.Fatalf("/stop changed active session %s → %s; should stay on same session", oldID, env.activeSession(key).ID)
+	}
+}
+
+func testCUJQuotedStop(t *testing.T) {
+	for _, tc := range []struct{ name, quote, stopped string }{
+		{"QuotedSide", routingUUIDB, routingUUIDB},
+		{"QuotedMain", routingUUIDA, routingUUIDA},
+		{"UnquotedMain", "", routingUUIDA},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e, p, send, _, _ := newRoutingJourney(t)
+			gateA, gateB := make(chan struct{}), make(chan struct{})
+			var releaseOnce sync.Once
+			release := func() { releaseOnce.Do(func() { close(gateA); close(gateB) }) }
+			t.Cleanup(release)
+			blocks := e.agent.(*routingTestAgent).blocks
+			blocks[routingUUIDA], blocks[routingUUIDB] = gateA, gateB
+			send("/switch "+routingUUIDA, "")
+			send("held-main-stop", "")
+			send("queued-main-stop", "")
+			awaitRoutingReply(t, p, e.i18n.T(MsgMessageQueued))
+			p.clearSent()
+			send("held-side-stop", routingUUIDB)
+			send("queued-side-stop", routingUUIDB)
+			awaitRoutingReply(t, p, e.i18n.T(MsgMessageQueued))
+			// Failed or unauthorized quote resolution must never stop the main
+			// execution, nor another user's execution in the same backend UUID.
+			for _, invalid := range []struct{ user, uuid string }{
+				{"owner", ""},
+				{"owner", "33333333-3333-3333-3333-333333333333"},
+				{"other-user", routingUUIDB},
+			} {
+				e.ReceiveMessage(p, &Message{SessionKey: "test:" + invalid.user, Platform: "test", UserID: invalid.user, Content: "/stop", QuotedReply: true, ReplySessionID: invalid.uuid, MessageID: time.Now().String(), ReplyCtx: "ctx"})
+			}
+			send("/stop", tc.quote)
+			text := awaitRoutingReply(t, p, e.i18n.T(MsgExecutionStopped))
+			if tc.quote != "" && !strings.Contains(text, "UUID: "+tc.stopped) {
+				t.Fatalf("stop acknowledgement has wrong target: %s", text)
+			}
+			release()
+			survivor, stopped := "main", "side"
+			if tc.stopped == routingUUIDA {
+				survivor, stopped = "side", "main"
+			}
+			awaitRoutingReply(t, p, "prompt=held-"+survivor+"-stop")
+			awaitRoutingReply(t, p, "prompt=queued-"+survivor+"-stop")
+			send("continued-side-after-stop", routingUUIDB)
+			awaitRoutingReply(t, p, "prompt=continued-side-after-stop")
+			send("main-after-quoted-stop", "")
+			if text := awaitRoutingReply(t, p, "prompt=main-after-quoted-stop"); !strings.Contains(text, "UUID: "+routingUUIDA) {
+				t.Fatalf("stop changed main session: %s", text)
+			}
+			for _, text := range p.getSent() {
+				if strings.Contains(text, "prompt=held-"+stopped+"-stop") || strings.Contains(text, "prompt=queued-"+stopped+"-stop") {
+					t.Fatalf("stopped target still replied: %s", text)
+				}
+			}
+		})
 	}
 }
 

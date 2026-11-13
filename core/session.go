@@ -531,6 +531,26 @@ func (sm *SessionManager) SwitchToAgentSession(userKey, agentSID, agentName, sum
 	return s
 }
 
+// GetOrCreateReplySession leaves the main conversation unchanged. Lookup and
+// creation share one lock so concurrent replies use the same busy lock.
+func (sm *SessionManager) GetOrCreateReplySession(userKey, agentSID, agentName, summary string) *Session {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	for _, sid := range sm.userSessions[userKey] {
+		if s := sm.sessions[sid]; s != nil && s.GetAgentSessionID() == agentSID {
+			s.MarkExplicitlyActivated()
+			return s
+		}
+	}
+	now := time.Now()
+	s := &Session{ID: sm.nextID(), Name: summary, AgentSessionID: agentSID,
+		AgentType: agentName, CreatedAt: now, UpdatedAt: now, ExplicitActivatedAt: now}
+	sm.sessions[s.ID] = s
+	sm.userSessions[userKey] = append(sm.userSessions[userKey], s.ID)
+	sm.saveLocked()
+	return s
+}
+
 func (sm *SessionManager) ListSessions(userKey string) []*Session {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()

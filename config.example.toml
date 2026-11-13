@@ -1710,6 +1710,7 @@ app_secret = "your-feishu-app-secret"
 
 # [[projects]]
 # name = "my-codex-project"
+# session_routing = true # UUID in replies, /switch UUID across directories, quoted replies keep the main session
 #
 # [projects.agent]
 # type = "codex"
@@ -1724,6 +1725,9 @@ app_secret = "your-feishu-app-secret"
 # Optional: app_server supports interactive approvals and named permissions.
 # 可选：app_server 支持交互审批及命名权限配置。
 # backend = "app_server"
+# Attach to an existing shared daemon instead of spawning a private process.
+# 接入已有共享服务；unix:// 使用 CODEX_HOME 下的默认 socket，恢复会话时保留原设置。
+# app_server_url = "unix://" # Also accepts unix:///absolute/socket/path or ws://host:port
 # permission_profile = "chat-workspace" # Defined in Codex config; replaces the legacy sandbox, not the approval policy.
 #                                      # 在 Codex 配置中定义；替代旧式沙箱选项，不改变审批策略。
 # Requires a Codex version that confirms activePermissionProfile; see docs/usage.md.

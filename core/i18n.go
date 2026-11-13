@@ -544,9 +544,14 @@ const (
 	MsgDeleteModeDeletingBody   MsgKey = "delete_mode_deleting_body"
 	MsgDeleteModeMissingSession MsgKey = "delete_mode_missing_session"
 
-	MsgSwitchSuccess   MsgKey = "switch_success"
-	MsgSwitchNoMatch   MsgKey = "switch_no_match"
-	MsgSwitchNoSession MsgKey = "switch_no_session"
+	MsgSwitchSuccess            MsgKey = "switch_success"
+	MsgSessionUUID              MsgKey = "session_uuid"
+	MsgGlobalSessionSwitched    MsgKey = "global_session_switched"
+	MsgGlobalSessionUnsupported MsgKey = "global_session_unsupported"
+	MsgQuotedSessionReply       MsgKey = "quoted_session_reply"
+	MsgQuotedSessionUnknown     MsgKey = "quoted_session_unknown"
+	MsgSwitchNoMatch            MsgKey = "switch_no_match"
+	MsgSwitchNoSession          MsgKey = "switch_no_session"
 
 	MsgCommandTimeout MsgKey = "command_timeout"
 
@@ -3292,6 +3297,34 @@ var messages = map[MsgKey]map[Language]string{
 		LangTraditionalChinese: "✅ 已切換到：%s（%s，%d 則訊息）",
 		LangJapanese:           "✅ 切り替え：%s（%s、%d件）",
 		LangSpanish:            "✅ Cambiado a: %s (%s, %d mensajes)",
+	},
+	MsgSessionUUID: {
+		LangEnglish: "UUID: %s", LangChinese: "UUID: %s", LangTraditionalChinese: "UUID: %s",
+		LangJapanese: "UUID: %s", LangSpanish: "UUID: %s",
+	},
+	MsgGlobalSessionSwitched: {
+		LangEnglish:            "✅ Main session switched\nUUID: %s\nDirectory: %s",
+		LangChinese:            "✅ 主会话已切换\nUUID: %s\n目录：%s",
+		LangTraditionalChinese: "✅ 主會話已切換\nUUID: %s\n目錄：%s",
+		LangJapanese:           "✅ メインセッションを切り替えました\nUUID: %s\nディレクトリ: %s",
+		LangSpanish:            "✅ Sesión principal cambiada\nUUID: %s\nDirectorio: %s",
+	},
+	MsgGlobalSessionUnsupported: {
+		LangEnglish: "This agent does not support global UUID lookup.",
+		LangChinese: "此代理不支持全局 UUID 查找。", LangTraditionalChinese: "此代理不支援全域 UUID 查找。",
+		LangJapanese: "このエージェントはグローバル UUID 検索に対応していません。",
+		LangSpanish:  "Este agente no admite búsquedas globales por UUID.",
+	},
+	MsgQuotedSessionReply: {
+		LangEnglish: "quoted session reply", LangChinese: "引用会话回复", LangTraditionalChinese: "引用會話回覆",
+		LangJapanese: "引用セッションへの返信", LangSpanish: "respuesta a sesión citada",
+	},
+	MsgQuotedSessionUnknown: {
+		LangEnglish:            "Cannot identify the quoted session. Reply to a bot message containing a UUID, or use /switch UUID. The main session is unchanged.",
+		LangChinese:            "无法确定引用消息所属的会话。请引用带 UUID 的机器人回复，或使用 /switch UUID。主会话未改变。",
+		LangTraditionalChinese: "無法確定引用訊息所屬的會話。請引用帶 UUID 的機器人回覆，或使用 /switch UUID。主會話未改變。",
+		LangJapanese:           "引用セッションを特定できません。UUID 付きのボット返信を引用するか、/switch UUID を使ってください。メインセッションは変更されていません。",
+		LangSpanish:            "No se puede identificar la sesión citada. Responde a un mensaje del bot con UUID o usa /switch UUID. La sesión principal no ha cambiado.",
 	},
 	MsgSwitchNoMatch: {
 		LangEnglish:            "❌ No session matching %q",

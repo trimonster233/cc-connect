@@ -26,8 +26,9 @@ func (e *Engine) showAsyncUserInput(state *interactiveState, p Platform, replyCt
 	}
 	state.mu.Lock()
 	state.pendingUserInput = pending
+	agentSession := state.agentSession
 	state.mu.Unlock()
-	e.sendAskQuestionPrompt(p, replyCtx, pending.questions, 0, pending.id)
+	e.sendAskQuestionPromptForSession(p, replyCtx, pending.questions, 0, agentSession, pending.id)
 }
 
 // Unlike a permission request, an async question neither stops the event reader
@@ -67,13 +68,15 @@ func (e *Engine) handleAsyncUserInput(p Platform, msg *Message, content, key str
 	if index+1 < len(pending.questions) {
 		pending.current++
 		next := pending.current
+		agentSession := state.agentSession
 		state.mu.Unlock()
-		e.reply(p, msg.ReplyCtx, fmt.Sprintf("✅ %s: **%s**", question.Question, answer))
-		e.sendAskQuestionPrompt(p, msg.ReplyCtx, pending.questions, next, pending.id)
+		e.reply(p, msg.ReplyCtx, appendReplyFooter(fmt.Sprintf("✅ %s: **%s**", question.Question, answer), e.uuidFooter(agentSession)))
+		e.sendAskQuestionPromptForSession(p, msg.ReplyCtx, pending.questions, next, agentSession, pending.id)
 		return content, true
 	}
 	pending.responding = true
 	agentSession := state.agentSession
+	busySession := state.busySession
 	var lines []string
 	for i, q := range pending.questions {
 		lines = append(lines, q.Question+": "+pending.answers[i])
@@ -83,7 +86,10 @@ func (e *Engine) handleAsyncUserInput(p Platform, msg *Message, content, key str
 
 	steered := false
 	var err error
-	session := sessions.GetOrCreateActive(msg.SessionKey)
+	session := busySession
+	if !e.sessionRouting || session == nil {
+		session = sessions.GetOrCreateActive(msg.SessionKey)
+	}
 	if sender, ok := agentSession.(UserInputSteerer); ok {
 		steered, err = sender.SteerUserInput(prompt)
 	}
@@ -98,7 +104,7 @@ func (e *Engine) handleAsyncUserInput(p Platform, msg *Message, content, key str
 		e.reply(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgError), err))
 		return content, true
 	}
-	e.reply(p, msg.ReplyCtx, fmt.Sprintf("✅ %s: **%s**", question.Question, answer))
+	e.reply(p, msg.ReplyCtx, appendReplyFooter(fmt.Sprintf("✅ %s: **%s**", question.Question, answer), e.uuidFooter(agentSession)))
 	if steered {
 		session.AddHistory("user", prompt)
 		sessions.Save()

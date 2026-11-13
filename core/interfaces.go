@@ -415,6 +415,18 @@ type HistoryProvider interface {
 	GetSessionHistory(ctx context.Context, sessionID string, limit int) ([]HistoryEntry, error)
 }
 
+// GlobalSessionResolver locates an exact backend UUID across working directories.
+// Implementations exclude internal/subagent sessions and return the original cwd.
+type GlobalSessionResolver interface {
+	ResolveSession(ctx context.Context, sessionID string) (*AgentSessionInfo, error)
+}
+
+// SessionReplyRoutingEnabler lets platforms retain trusted quote metadata even
+// when the visible quote context would normally be suppressed for a thread.
+type SessionReplyRoutingEnabler interface {
+	SetSessionRoutingEnabled(bool)
+}
+
 // ProviderConfig holds API provider settings for an agent.
 type ProviderConfig struct {
 	Name     string

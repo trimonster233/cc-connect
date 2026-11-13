@@ -172,6 +172,7 @@ type appServerSession struct {
 	cancel context.CancelFunc
 
 	cmd     *exec.Cmd
+	shared  *sharedAppServerTransport // non-nil only when attaching to an existing server
 	stdin   io.WriteCloser
 	procMu  sync.Mutex
 	writeMu sync.Mutex
@@ -247,6 +248,9 @@ func newAppServerSession(ctx context.Context, cliBin string, cliExtraArgs []stri
 		_ = s.Close()
 		return nil, err
 	}
+	if s.shared != nil {
+		s.shared.ready.Store(true)
+	}
 	if err := s.refreshUsage(context.Background()); err != nil {
 		slog.Debug("codex app-server: initial rate limit fetch failed", "error", err)
 	}
@@ -269,6 +273,9 @@ func appServerListenURL(url string) string {
 }
 
 func (s *appServerSession) connect() error {
+	if isSharedAppServerURL(s.url) {
+		return s.connectSharedAppServer()
+	}
 	args := []string{"app-server"}
 	// With url "stdio://" the session speaks JSON-RPC over the stdio pipes.
 	// Pass no --listen flag in that case: on codex 0.152+ a --listen value
@@ -373,6 +380,12 @@ func (s *appServerSession) ensureThread(resumeID string) error {
 	if resumeID != "" && resumeID != core.ContinueSession {
 		params := s.threadRequestParams()
 		params["threadId"] = resumeID
+		if s.shared != nil {
+			// Attaching must not rewrite the original client's model, cwd,
+			// permission policy, instructions, or dynamic tools.
+			s.threadID.Store(resumeID)
+			params = map[string]any{"threadId": resumeID, "excludeTurns": true}
+		}
 
 		var resp threadResumeResponse
 		if err := s.request("thread/resume", params, &resp); err != nil {
@@ -556,6 +569,9 @@ func (s *appServerSession) Send(prompt string, messageID string, images []core.I
 		"threadId": threadID,
 		"input":    input,
 	}
+	if s.shared != nil {
+		return s.submitSharedInput(input, messageID)
+	}
 	if model := s.GetModel(); model != "" {
 		params["model"] = model
 	}
@@ -640,6 +656,11 @@ func (s *appServerSession) handleServerRequest(probe map[string]json.RawMessage)
 		return
 	}
 	params := probe["params"]
+	if s.shared != nil && !s.ownsSharedServerRequest(method, params) {
+		// Other clients retain responsibility for their own tools/approvals.
+		// In particular never decline a request just because it is foreign.
+		return
+	}
 	if s.rejectForeignServerRequest(rawID, method, params) {
 		return
 	}
@@ -1056,8 +1077,12 @@ func (s *appServerSession) Alive() bool {
 func (s *appServerSession) Close() error {
 	s.alive.Store(false)
 	s.cancel()
+	s.clearSharedTurnMarker()
 
 	s.procMu.Lock()
+	if s.shared != nil && s.shared.conn != nil {
+		_ = s.shared.conn.Close()
+	}
 	if s.stdin != nil {
 		_ = s.stdin.Close()
 		s.stdin = nil
@@ -1222,6 +1247,14 @@ func (s *appServerSession) handleResponse(resp rpcResponseEnvelope) {
 }
 
 func (s *appServerSession) handleNotification(method string, paramsRaw json.RawMessage) {
+	if s.shared != nil {
+		s.shared.notificationMu.Lock()
+		defer s.shared.notificationMu.Unlock()
+		if !s.acceptSharedNotification(method, paramsRaw) {
+			return
+		}
+		s.syncSharedTurnMarker()
+	}
 	switch method {
 	case "turn/started":
 		var notif turnNotification
@@ -1879,6 +1912,9 @@ func (s *appServerSession) abortTransport() {
 	}
 
 	s.procMu.Lock()
+	if s.shared != nil && s.shared.conn != nil {
+		_ = s.shared.conn.Close()
+	}
 	if s.stdin != nil {
 		_ = s.stdin.Close()
 		s.stdin = nil
@@ -1908,7 +1944,14 @@ func (s *appServerSession) writeJSON(v any) error {
 
 	s.procMu.Lock()
 	stdin := s.stdin
+	var shared *sharedAppServerTransport
+	if s.shared != nil {
+		shared = s.shared
+	}
 	s.procMu.Unlock()
+	if shared != nil {
+		return s.writeSharedJSON(b)
+	}
 	if stdin == nil {
 		return fmt.Errorf("codex app-server connection is closed")
 	}

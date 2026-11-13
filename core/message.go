@@ -405,22 +405,24 @@ type LocationAttachment struct {
 
 // Message represents a unified incoming message from any platform.
 type Message struct {
-	SessionKey   string // unique key for user context, e.g. "feishu:{chatID}:{userID}"
-	Platform     string
-	MessageID    string // platform message ID for tracing
-	Recalled     bool   // true for platform message recall/delete events targeting MessageID
-	ChannelID    string
-	UserID       string
-	UserName     string
-	ChatName     string // human-readable chat/group name (optional)
-	Content      string
-	Images       []ImageAttachment   // attached images (if any)
-	Files        []FileAttachment    // attached files (if any)
-	Audio        *AudioAttachment    // voice message (if any)
-	Location     *LocationAttachment // geographical location (if any)
-	ExtraContent string              // platform-enriched content (e.g. location text, reply quote) prepended for the agent
-	OnAccepted   func()              // called once when the engine accepts this message for an agent turn
-	ChannelKey   string              // platform-provided channel identifier for workspace binding (optional)
+	SessionKey     string // unique key for user context, e.g. "feishu:{chatID}:{userID}"
+	Platform       string
+	MessageID      string // platform message ID for tracing
+	ReplySessionID string // backend UUID from a trusted quoted bot reply
+	QuotedReply    bool   // platform received a quoted reply requiring session resolution
+	Recalled       bool   // true for platform message recall/delete events targeting MessageID
+	ChannelID      string
+	UserID         string
+	UserName       string
+	ChatName       string // human-readable chat/group name (optional)
+	Content        string
+	Images         []ImageAttachment   // attached images (if any)
+	Files          []FileAttachment    // attached files (if any)
+	Audio          *AudioAttachment    // voice message (if any)
+	Location       *LocationAttachment // geographical location (if any)
+	ExtraContent   string              // platform-enriched content (e.g. location text, reply quote) prepended for the agent
+	OnAccepted     func()              // called once when the engine accepts this message for an agent turn
+	ChannelKey     string              // platform-provided channel identifier for workspace binding (optional)
 	// LegacyChannelKey is the platform-provided channel identifier used by an
 	// older workspace-binding scope. When both keys are set, multi-workspace
 	// routing atomically migrates the legacy binding to ChannelKey.
@@ -454,6 +456,7 @@ const (
 	EventToolUse           EventType = "tool_use"           // tool invocation info
 	EventToolResult        EventType = "tool_result"        // tool execution result
 	EventResult            EventType = "result"             // final aggregated result
+	EventQueued            EventType = "queued"             // accepted by a shared backend, waiting for its active turn
 	EventError             EventType = "error"              // error occurred
 	EventPermissionRequest EventType = "permission_request" // agent requests permission via stdio protocol
 	EventUserInputRequest  EventType = "user_input_request" // non-blocking question; answer is a user message
@@ -528,6 +531,7 @@ type HistoryEntry struct {
 // AgentSessionInfo describes one session as reported by the agent backend.
 type AgentSessionInfo struct {
 	ID           string
+	WorkDir      string // original working directory, when known
 	Summary      string
 	MessageCount int
 	ModifiedAt   time.Time

@@ -82,6 +82,10 @@ temp/
 *.pid
 *.log
 
+# Python helper caches
+__pycache__/
+*.py[cod]
+
 # Per-workspace session stores (<engine>_ws_<hash>.json, see
 # Engine.getOrCreateWorkspaceAgent). They are derived from the engine's own
 # session store, so they belong next to it — never in the working tree. This

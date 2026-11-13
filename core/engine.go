@@ -457,6 +457,7 @@ type Engine struct {
 	// hiding sessions created by direct CLI usage in the same work_dir.
 	// Default false = show all sessions.
 	filterExternalSessions bool
+	sessionRouting         bool
 
 	// Shell configuration for /shell, cron exec, hooks, webhook exec
 	shell        string // shell binary path (e.g. "sh", "/bin/zsh")
@@ -3070,6 +3071,14 @@ func (e *Engine) handleMessage(p Platform, msg *Message) {
 	}
 
 	// Multi-workspace resolution
+	if e.sessionRouting && (msg.QuotedReply || msg.ReplySessionID != "") && !strings.HasPrefix(content, "/") {
+		if msg.ReplySessionID == "" {
+			e.reply(p, msg.ReplyCtx, e.i18n.T(MsgQuotedSessionUnknown))
+			return
+		}
+		e.handleSessionReply(p, msg)
+		return
+	}
 	var wsAgent Agent
 	var wsSessions *SessionManager
 	var resolvedWorkspace string
@@ -3079,7 +3088,7 @@ func (e *Engine) handleMessage(p Platform, msg *Message) {
 	if forcedWorkDir := e.sendWorkDirForSession(msg.SessionKey); forcedWorkDir != "" {
 		e.bindSendWorkDir(msg.SessionKey, forcedWorkDir)
 		var err error
-		wsAgent, wsSessions, err = e.getOrCreateWorkspaceAgent(forcedWorkDir)
+		wsAgent, wsSessions, err = e.routingWorkspace(forcedWorkDir)
 		if err != nil {
 			slog.Error("failed to create send work_dir agent", "work_dir", forcedWorkDir, "err", err)
 			e.reply(p, msg.ReplyCtx, fmt.Sprintf("Failed to initialize workspace: %v", err))
@@ -3139,6 +3148,9 @@ func (e *Engine) handleMessage(p Platform, msg *Message) {
 		interactiveKey = resolvedWorkspace + ":" + msg.SessionKey
 	}
 
+	if e.sessionRouting {
+		interactiveKey = sessionRoutingKey(e.routingBaseKey(msg.SessionKey, resolvedWorkspace, sessions), sessions.GetOrCreateActive(msg.SessionKey))
+	}
 	if len(msg.Images) == 0 && strings.HasPrefix(content, "/") {
 		if e.handleCommand(p, msg, content) {
 			return
@@ -3674,7 +3686,7 @@ found:
 		if curIdx+1 < len(pending.Questions) {
 			pending.CurrentQuestion = curIdx + 1
 			e.reply(p, msg.ReplyCtx, fmt.Sprintf("✅ %s: **%s**", q.Question, answer))
-			e.sendAskQuestionPrompt(p, msg.ReplyCtx, pending.Questions, curIdx+1)
+			e.sendAskQuestionPromptForSession(p, msg.ReplyCtx, pending.Questions, curIdx+1, state.agentSession)
 			return true
 		}
 
@@ -6074,6 +6086,9 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				}
 			}
 
+		case EventQueued:
+			e.send(p, replyCtx, appendReplyFooter(e.i18n.T(MsgMessageQueued), e.uuidFooter(state.agentSession)))
+
 		case EventUserInputRequest:
 			e.showAsyncUserInput(state, p, replyCtx, event)
 
@@ -6141,7 +6156,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 			state.mu.Unlock()
 
 			if isAskQuestion {
-				e.sendAskQuestionPrompt(p, replyCtx, event.Questions, 0)
+				e.sendAskQuestionPromptForSession(p, replyCtx, event.Questions, 0, state.agentSession)
 			} else {
 				permLimit := e.display.ToolMaxLen
 				if permLimit > 0 {
@@ -6149,7 +6164,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				}
 				toolInput := truncateIf(event.ToolInput, permLimit)
 				prompt := fmt.Sprintf(e.i18n.T(MsgPermissionPrompt), event.ToolName, toolInput)
-				e.sendPermissionPrompt(p, replyCtx, prompt, event.ToolName, toolInput)
+				e.sendPermissionPrompt(p, replyCtx, prompt, event.ToolName, toolInput, state.agentSession)
 			}
 
 			// Stop idle timer while waiting for user permission response;
@@ -6401,6 +6416,13 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 					legacyStatusFooter = footer
 				}
 			}
+			if !isSilent {
+				uuid := e.uuidFooter(state.agentSession)
+				statusFooter = joinSessionFooter(statusFooter, uuid)
+				if legacyStatusFooter != "" {
+					legacyStatusFooter = joinSessionFooter(legacyStatusFooter, uuid)
+				}
+			}
 			fullResponse = cleanResponse
 
 			turnDuration := time.Since(turnStart)
@@ -6446,6 +6468,9 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				// without leaking the marker, and skip the fallback send that
 				// would otherwise post the suppressed marker verbatim.
 				cardBody := fullResponse
+				if !isSilent && e.uuidFooter(state.agentSession) != "" {
+					cardBody = appendReplyFooter(cardBody, e.uuidFooter(state.agentSession))
+				}
 				if isSilent {
 					cardBody = strings.TrimRight(cardAnswerText.String(), " \t\r\n")
 				}
@@ -6456,6 +6481,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 					// for a silent reply, which has no deliverable content.
 					if !isSilent {
 						for _, chunk := range SplitMessageCodeFenceAware(fullResponse, maxPlatformMessageLen) {
+							chunk = appendReplyFooter(chunk, e.uuidFooter(state.agentSession))
 							if err := sendWorkspaceWithError(p, replyCtx, chunk); err != nil {
 								return
 							}
@@ -6832,7 +6858,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 						break
 					}
 				}
-				e.send(p, replyCtx, userMsg)
+				e.send(p, replyCtx, appendReplyFooter(userMsg, e.uuidFooter(state.agentSession)))
 			}
 			// Only drop queued messages if the agent session is dead.
 			// Some agents (e.g. Codex) emit EventError for per-turn failures
@@ -7812,6 +7838,10 @@ func (e *Engine) cmdSwitch(p Platform, msg *Message, args []string) {
 		return
 	}
 	query := strings.TrimSpace(strings.Join(args, " "))
+	if e.sessionRouting && IsSessionUUID(query) {
+		e.switchGlobalSession(p, msg, query)
+		return
+	}
 
 	slog.Info("cmdSwitch: listing agent sessions", "session_key", msg.SessionKey)
 	agent, sessions, interactiveKey, err := e.commandContext(p, msg)
@@ -7994,10 +8024,13 @@ func (e *Engine) buildReplyFooter(agent Agent, session AgentSession, workspaceDi
 // visual noise during streaming. Header status badge already signals "Working").
 func (e *Engine) composeRichStatusFooter(streaming bool, turnStart time.Time, agent Agent, session AgentSession, workspaceDir string) string {
 	if !e.replyFooterEnabled {
+		if !streaming {
+			return e.uuidFooter(session)
+		}
 		return ""
 	}
 	if streaming {
-		return ""
+		return e.uuidFooter(session)
 	}
 	var lines []string
 
@@ -8032,7 +8065,7 @@ func (e *Engine) composeRichStatusFooter(streaming bool, turnStart time.Time, ag
 		}
 	}
 
-	return strings.Join(lines, "\n")
+	return joinSessionFooter(strings.Join(lines, "\n"), e.uuidFooter(session))
 }
 
 // buildClaudeStatusLineFooter renders the rich-card line-2 token-usage detail:
@@ -8465,6 +8498,11 @@ func sendChunksWithStatusFooter(ctx context.Context, p Platform, replyCtx any, b
 	chunks := SplitMessageCodeFenceAware(body, maxPlatformMessageLen)
 	for i, chunk := range chunks {
 		isLast := i == len(chunks)-1
+		if !isLast {
+			if id := SessionUUIDFromReply(statusFooter); id != "" {
+				chunk = appendReplyFooter(chunk, "UUID: "+id)
+			}
+		}
 		if isLast && statusFooter != "" {
 			if sfs, ok := p.(StatusFooterSender); ok {
 				if err := sfs.SendWithStatusFooter(ctx, replyCtx, chunk, statusFooter); err == nil {
@@ -8980,6 +9018,9 @@ func (e *Engine) diff2html(ctx context.Context, diff []byte, workDir, title stri
 // dirApply applies /dir mutations (same semantics as cmdDir). sessionKey is used for GetOrCreateActive.
 // On failure returns a non-empty errMsg; on success returns ("", successMsg) for plain-text replies.
 func (e *Engine) dirApply(agent Agent, sessions *SessionManager, interactiveKey, sessionKey string, args []string) (errMsg, successMsg string) {
+	if e.sessionRouting {
+		return e.routingDirApply(agent, sessionKey, args)
+	}
 	switcher, ok := agent.(WorkDirSwitcher)
 	if !ok {
 		return e.i18n.T(MsgDirNotSupported), ""
@@ -10884,6 +10925,18 @@ func (e *Engine) cmdTTS(p Platform, msg *Message, args []string) {
 }
 
 func (e *Engine) cmdStop(p Platform, msg *Message) {
+	if e.sessionRouting && (msg.QuotedReply || msg.ReplySessionID != "") {
+		route := e.resolveReplySession(p, msg)
+		if route == nil {
+			return
+		}
+		result := MsgNoExecution
+		if e.stopInteractiveSession(route.key, p, msg.ReplyCtx) {
+			result = MsgExecutionStopped
+		}
+		e.reply(p, msg.ReplyCtx, appendReplyFooter(e.i18n.T(result), e.i18n.Tf(MsgSessionUUID, route.session.GetAgentSessionID())))
+		return
+	}
 	// /stop only tears down the live agent process; it preserves the stored
 	// AgentSessionID so the next message can --resume the conversation. This
 	// matches the card-button stop path (see executeCardAction "/stop"). The
@@ -12372,7 +12425,15 @@ func (e *Engine) resolveOutboundSessionTarget(sessionKey string, hasAttachments 
 
 // sendPermissionPrompt sends a permission prompt with interactive buttons when
 // the platform supports them. Fallback chain: InlineButtonSender → CardSender → plain text.
-func (e *Engine) sendPermissionPrompt(p Platform, replyCtx any, prompt, toolName, toolInput string) {
+func (e *Engine) sendPermissionPrompt(p Platform, replyCtx any, prompt, toolName, toolInput string, session ...AgentSession) {
+	uuid, id := "", ""
+	if len(session) > 0 {
+		uuid = e.uuidFooter(session[0])
+		if uuid != "" {
+			id = session[0].CurrentSessionID()
+		}
+	}
+	prompt = appendReplyFooter(prompt, uuid)
 	e.hooks.Emit(HookEvent{
 		Event:    HookEventPermissionRequested,
 		Platform: p.Name(),
@@ -12405,12 +12466,13 @@ func (e *Engine) sendPermissionPrompt(p Platform, replyCtx any, prompt, toolName
 	// Try card with buttons (Feishu/Lark)
 	if supportsCards(p) {
 		body := fmt.Sprintf(e.i18n.T(MsgPermCardBody), toolName, toolInput)
+		body = appendReplyFooter(body, uuid)
 		extra := func(label, color string) map[string]string {
-			return map[string]string{
+			return withSessionUUID(map[string]string{
 				"perm_label": label,
 				"perm_color": color,
 				"perm_body":  body,
-			}
+			}, id)
 		}
 		allowBtn := CardButton{Text: e.i18n.T(MsgPermBtnAllow), Type: "primary", Value: "perm:allow",
 			Extra: extra("✅ "+e.i18n.T(MsgPermBtnAllow), "green")}
@@ -12435,11 +12497,27 @@ func (e *Engine) sendPermissionPrompt(p Platform, replyCtx any, prompt, toolName
 
 // sendAskQuestionPrompt renders one question (by index) from the AskUserQuestion list.
 // qIdx is the 0-based index of the question to display.
+func (e *Engine) sendAskQuestionPromptForSession(p Platform, replyCtx any, questions []UserQuestion, qIdx int, session AgentSession, requestID ...string) {
+	request, id := "", ""
+	if len(requestID) > 0 {
+		request = requestID[0]
+	}
+	if e.uuidFooter(session) != "" {
+		id = session.CurrentSessionID()
+	}
+	e.sendAskQuestionPrompt(p, replyCtx, questions, qIdx, request, id)
+}
+
 func (e *Engine) sendAskQuestionPrompt(p Platform, replyCtx any, questions []UserQuestion, qIdx int, requestID ...string) {
 	if qIdx >= len(questions) {
 		return
 	}
 	q := questions[qIdx]
+	id, uuid := "", ""
+	if e.sessionRouting && len(requestID) > 1 && IsSessionUUID(requestID[1]) {
+		id = requestID[1]
+		uuid = e.i18n.Tf(MsgSessionUUID, id)
+	}
 	total := len(questions)
 	answerValue := func(option int) string {
 		if len(requestID) > 0 && requestID[0] != "" {
@@ -12497,13 +12575,16 @@ func (e *Engine) sendAskQuestionPrompt(p Platform, replyCtx any, questions []Use
 					Text:  opt.Label,
 					Type:  "primary",
 					Value: answerData,
-					Extra: map[string]string{
+					Extra: withSessionUUID(map[string]string{
 						"askq_label":    opt.Label,
 						"askq_question": q.Question,
-					},
+					}, id),
 				})
 			}
 			cb.Note(e.i18n.T(MsgAskQuestionNote))
+		}
+		if uuid != "" {
+			cb.Markdown(uuid)
 		}
 		e.sendWithCard(p, replyCtx, cb.Build())
 		return
@@ -12545,7 +12626,7 @@ func (e *Engine) sendAskQuestionPrompt(p Platform, replyCtx any, questions []Use
 			slog.Warn("sendAskQuestionPrompt: outgoing wait cancelled", "platform", p.Name(), "error", err)
 			return
 		}
-		if err := bs.SendWithButtons(e.ctx, replyCtx, textBuf.String(), rows); err == nil {
+		if err := bs.SendWithButtons(e.ctx, replyCtx, appendReplyFooter(textBuf.String(), uuid), rows); err == nil {
 			return
 		}
 	}
@@ -12569,7 +12650,7 @@ func (e *Engine) sendAskQuestionPrompt(p Platform, replyCtx any, questions []Use
 		sb.WriteString("\n")
 	}
 	sb.WriteString(fmt.Sprintf("\n%s", e.i18n.T(MsgAskQuestionNote)))
-	e.send(p, replyCtx, sb.String())
+	e.send(p, replyCtx, appendReplyFooter(sb.String(), uuid))
 }
 
 // waitOutgoing blocks on the per-platform outgoing rate limiter when enabled.
@@ -17218,7 +17299,13 @@ func (e *Engine) commandContext(p Platform, msg *Message) (Agent, *SessionManage
 // commandContextWithWorkspace is like commandContext but additionally returns
 // the resolved workspace path for callers that need to forward it to
 // processInteractiveMessageWith (idle reaper bookkeeping, reply footer, etc).
-func (e *Engine) commandContextWithWorkspace(p Platform, msg *Message) (Agent, *SessionManager, string, string, error) {
+func (e *Engine) commandContextWithWorkspaceBase(p Platform, msg *Message) (Agent, *SessionManager, string, string, error) {
+	if e.sessionRouting {
+		if dir := e.sendWorkDirForSession(msg.SessionKey); dir != "" {
+			agent, sessions, err := e.routingWorkspace(dir)
+			return agent, sessions, dir + ":" + msg.SessionKey, dir, err
+		}
+	}
 	if !e.multiWorkspace {
 		return e.agent, e.sessions, msg.SessionKey, "", nil
 	}
@@ -17245,7 +17332,7 @@ func (e *Engine) commandContextWithWorkspace(p Platform, msg *Message) (Agent, *
 // It uses existing workspace bindings and falls back to global context if unresolved.
 func (e *Engine) sessionContextForKey(sessionKey string) (Agent, *SessionManager) {
 	if workspace := e.sendWorkDirForSession(sessionKey); workspace != "" {
-		if wsAgent, wsSessions, err := e.getOrCreateWorkspaceAgent(workspace); err == nil {
+		if wsAgent, wsSessions, err := e.routingWorkspace(workspace); err == nil {
 			return wsAgent, wsSessions
 		}
 	}
@@ -17308,6 +17395,11 @@ func (e *Engine) sendWorkDirForSession(sessionKey string) string {
 	if sessionKey == "" {
 		return ""
 	}
+	if e.sessionRouting && e.projectState != nil {
+		if dir := e.projectState.SessionWorkDir(sessionKey); dir != "" {
+			return dir
+		}
+	}
 	participantKey := directParticipantKeyForSession(sessionKey)
 	e.sendWorkDirMu.RLock()
 	defer e.sendWorkDirMu.RUnlock()
@@ -17354,6 +17446,17 @@ func (e *Engine) workspaceFromLiveState(sessionKey string) string {
 // interactiveKeyForSessionKey returns the interactive state key for a sessionKey.
 // In multi-workspace mode, it prefixes with the bound workspace path when available.
 func (e *Engine) interactiveKeyForSessionKey(sessionKey string) string {
+	if e.sessionRouting {
+		agent, sessions := e.sessionContextForKey(sessionKey)
+		dir := e.sendWorkDirForSession(sessionKey)
+		if dir == "" && sessions != e.sessions {
+			if wd, ok := agent.(interface{ GetWorkDir() string }); ok {
+				dir = wd.GetWorkDir()
+			}
+		}
+		base := e.routingBaseKey(sessionKey, dir, sessions)
+		return sessionRoutingKey(base, sessions.GetOrCreateActive(sessionKey))
+	}
 	if workspace := e.sendWorkDirForSession(sessionKey); workspace != "" {
 		return workspace + ":" + sessionKey
 	}
