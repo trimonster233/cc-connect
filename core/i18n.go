@@ -547,8 +547,6 @@ const (
 	MsgSwitchSuccess            MsgKey = "switch_success"
 	MsgSessionUUID              MsgKey = "session_uuid"
 	MsgReplyQuestion            MsgKey = "reply_question"
-	MsgReplyDirectory           MsgKey = "reply_directory"
-	MsgReplyModel               MsgKey = "reply_model"
 	MsgGlobalSessionSwitched    MsgKey = "global_session_switched"
 	MsgGlobalSessionUnsupported MsgKey = "global_session_unsupported"
 	MsgQuotedSessionReply       MsgKey = "quoted_session_reply"
@@ -3308,14 +3306,6 @@ var messages = map[MsgKey]map[Language]string{
 	MsgReplyQuestion: {
 		LangEnglish: "Question: %s", LangChinese: "问题：%s", LangTraditionalChinese: "問題：%s",
 		LangJapanese: "質問：%s", LangSpanish: "Pregunta: %s",
-	},
-	MsgReplyDirectory: {
-		LangEnglish: "Directory: %s", LangChinese: "目录：%s", LangTraditionalChinese: "目錄：%s",
-		LangJapanese: "ディレクトリ：%s", LangSpanish: "Directorio: %s",
-	},
-	MsgReplyModel: {
-		LangEnglish: "Model: %s", LangChinese: "模型：%s", LangTraditionalChinese: "模型：%s",
-		LangJapanese: "モデル：%s", LangSpanish: "Modelo: %s",
 	},
 	MsgGlobalSessionSwitched: {
 		LangEnglish:            "✅ Main session switched\nUUID: %s\nDirectory: %s",

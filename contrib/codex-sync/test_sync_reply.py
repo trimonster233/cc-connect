@@ -108,6 +108,36 @@ class ReplySyncTests(unittest.TestCase):
         ]))
         self.assertEqual(sync.turn_details(self.payload, self.config, SID), {'cwd': '', 'model': ''})
 
+    def test_usage_and_effort_are_reported_for_matching_turn_not_lifetime_or_later(self):
+        expected = {'input_tokens': 193100, 'output_tokens': 272, 'cache_write_tokens': 0,
+                    'cache_read_tokens': 189200, 'used_tokens': 193372, 'context_window': 470000}
+        self.transcript([
+            {'type': 'session_meta', 'payload': {'id': SID}},
+            {'type': 'turn_context', 'payload': {'turn_id': 'turn', 'model': 'gpt-6.1-sol', 'effort': 'medium'}},
+            {'type': 'event_msg', 'payload': {'type': 'token_count', 'info': {
+                'total_token_usage': {'input_tokens': 99999999},
+                'last_token_usage': {'input_tokens': 193100, 'output_tokens': 272, 'cached_input_tokens': 189200, 'cache_write_input_tokens': 0, 'total_tokens': 193372},
+                'model_context_window': 470000}}},
+            {'type': 'turn_context', 'payload': {'turn_id': 'later', 'effort': 'high'}},
+            {'type': 'event_msg', 'payload': {'type': 'token_count', 'info': {'last_token_usage': {'input_tokens': 7}}}},
+        ])
+        conn = self.connection()
+        with patch.object(sync, 'UnixHTTPConnection', return_value=conn):
+            self.assertTrue(sync.forward(self.payload, self.config))
+        data = json.loads(conn.request.call_args.args[2])['session_reply']
+        self.assertEqual(data['usage'], expected)
+        self.assertEqual(data['effort'], 'medium')
+
+    def test_missing_usage_in_new_turn_does_not_reuse_previous_turn_counts(self):
+        self.payload.pop('turn_id')
+        self.transcript([
+            {'type': 'session_meta', 'payload': {'id': SID}},
+            {'type': 'turn_context', 'payload': {'turn_id': 'old'}},
+            {'type': 'event_msg', 'payload': {'type': 'token_count', 'info': {'last_token_usage': {'input_tokens': 999}}}},
+            {'type': 'turn_context', 'payload': {'turn_id': 'new'}},
+        ])
+        self.assertNotIn('usage', sync.turn_details(self.payload, self.config, SID))
+
 
 
 if __name__ == '__main__':

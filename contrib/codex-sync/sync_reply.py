@@ -27,6 +27,8 @@ def turn_details(payload, config, sid):
     """Read the matching turn, never a later turn's model or question."""
     details = {key: payload.get(key, '') for key in ('cwd', 'model')}
     details['question'] = payload.get('user_message') or payload.get('last_user_message') or ''
+    if payload.get('effort'):
+        details['effort'] = payload['effort']
     home = Path(config.get('codex_home') or os.environ.get('CODEX_HOME') or Path.home() / '.codex').expanduser()
     path = payload.get('transcript_path')
     if path:
@@ -51,11 +53,16 @@ def turn_details(payload, config, sid):
                     if not details['cwd']:
                         details['cwd'] = item.get('cwd', '')
                 elif row.get('type') == 'turn_context':
+                    if not target and item.get('turn_id') != current:
+                        details.pop('usage', None)
                     current = item.get('turn_id')
                     if not target or current == target:
                         for key in ('cwd', 'model'):
                             if item.get(key):
                                 details[key] = item[key]
+                        effort = item.get('effort') or item.get('reasoning_effort')
+                        if effort:
+                            details['effort'] = effort
                 elif row.get('type') == 'response_item' and item.get('type') == 'message' and item.get('role') == 'user':
                     metadata = item.get('internal_chat_message_metadata_passthrough') or {}
                     turn = metadata.get('turn_id') or current
@@ -64,6 +71,19 @@ def turn_details(payload, config, sid):
                 elif row.get('type') == 'event_msg' and item.get('type') == 'user_message':
                     if not target or (item.get('turn_id') or current) == target:
                         details['question'] = item.get('message', '')
+                elif row.get('type') == 'event_msg' and item.get('type') == 'token_count':
+                    if not target or (item.get('turn_id') or current) == target:
+                        info = item.get('info') or {}
+                        usage = info.get('last_token_usage')
+                        if isinstance(usage, dict):
+                            details['usage'] = {
+                                'input_tokens': usage.get('input_tokens', 0),
+                                'output_tokens': usage.get('output_tokens', 0),
+                                'cache_write_tokens': usage.get('cache_write_input_tokens', usage.get('cache_creation_input_tokens', 0)),
+                                'cache_read_tokens': usage.get('cached_input_tokens', 0),
+                                'used_tokens': usage.get('total_tokens', 0) or usage.get('input_tokens', 0) + usage.get('output_tokens', 0),
+                                'context_window': info.get('model_context_window', 0),
+                            }
     except OSError as exc:
         print('codex-reply-sync: cannot read turn details: ' + str(exc), file=sys.stderr)
     return details
@@ -91,16 +111,20 @@ def forward(payload, config):
     if sent.exists():
         return False
     details = turn_details(payload, config, sid)
+    reply_data = {
+        'content': reply,
+        'question': details.get('question', ''),
+        'work_dir': details.get('cwd', ''),
+        'model': details.get('model', ''),
+        'session_id': sid,
+    }
+    for key in ('effort', 'usage'):
+        if key in details:
+            reply_data[key] = details[key]
     body = json.dumps({
         'project': config['project'],
         'session_key': config['session_key'],
-        'session_reply': {
-            'content': reply,
-            'question': details.get('question', ''),
-            'work_dir': details.get('cwd', ''),
-            'model': details.get('model', ''),
-            'session_id': sid,
-        },
+        'session_reply': reply_data,
     }, ensure_ascii=False).encode()
     conn = UnixHTTPConnection(data / 'run/api.sock')
     try:

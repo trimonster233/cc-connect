@@ -8,11 +8,47 @@ import (
 // SessionReply is the unformatted final result shared by interactive turns and
 // the local /send API. Collectors supply facts; the engine alone renders them.
 type SessionReply struct {
-	Content   string `json:"content"`
-	Question  string `json:"question,omitempty"`
-	WorkDir   string `json:"work_dir,omitempty"`
-	Model     string `json:"model,omitempty"`
-	SessionID string `json:"session_id"`
+	Content   string             `json:"content"`
+	Question  string             `json:"question,omitempty"`
+	WorkDir   string             `json:"work_dir,omitempty"`
+	Model     string             `json:"model,omitempty"`
+	SessionID string             `json:"session_id"`
+	Effort    string             `json:"effort,omitempty"`
+	Usage     *SessionReplyUsage `json:"usage,omitempty"`
+}
+
+// SessionReplyUsage carries reported token facts across the local sync API.
+// Both collectors use the latest inference's usage, not lifetime thread totals.
+type SessionReplyUsage struct {
+	InputTokens      int `json:"input_tokens"`
+	OutputTokens     int `json:"output_tokens"`
+	CacheWriteTokens int `json:"cache_write_tokens"`
+	CacheReadTokens  int `json:"cache_read_tokens"`
+	UsedTokens       int `json:"used_tokens"`
+	ContextWindow    int `json:"context_window"`
+}
+
+func sessionReplyStatusLine(reply SessionReply) string {
+	var parts []string
+	if reply.Model != "" {
+		parts = append(parts, reply.Model)
+	}
+	if reply.Effort != "" {
+		parts = append(parts, "effort:"+reply.Effort)
+	}
+	if usage := reply.Usage; usage != nil {
+		parts = append(parts, "out "+formatStatusTokenCount(usage.OutputTokens))
+		parts = append(parts, fmt.Sprintf("in %s cw %s cr %s", formatStatusTokenCount(usage.InputTokens), formatStatusTokenCount(usage.CacheWriteTokens), formatStatusTokenCount(usage.CacheReadTokens)))
+		used := usage.UsedTokens
+		if used <= 0 {
+			used = usage.InputTokens + usage.OutputTokens
+		}
+		if usage.ContextWindow > 0 && used > 0 {
+			pct := min(100, used*100/usage.ContextWindow)
+			parts = append(parts, fmt.Sprintf("ctx %d%%", pct))
+		}
+	}
+	return strings.Join(parts, " · ")
 }
 
 func questionExcerpt(text string) string {
@@ -47,11 +83,11 @@ func (e *Engine) formatSessionReply(reply SessionReply) (string, string) {
 		body = "> " + e.i18n.Tf(MsgReplyQuestion, question) + "\n\n" + body
 	}
 	var footer []string
-	if reply.WorkDir != "" {
-		footer = append(footer, e.i18n.Tf(MsgReplyDirectory, reply.WorkDir))
+	if status := sessionReplyStatusLine(reply); status != "" {
+		footer = append(footer, status)
 	}
-	if reply.Model != "" {
-		footer = append(footer, e.i18n.Tf(MsgReplyModel, reply.Model))
+	if reply.WorkDir != "" {
+		footer = append(footer, compactReplyFooterPath(reply.WorkDir))
 	}
 	if IsSessionUUID(reply.SessionID) {
 		footer = append(footer, e.i18n.Tf(MsgSessionUUID, reply.SessionID))
@@ -60,7 +96,14 @@ func (e *Engine) formatSessionReply(reply SessionReply) (string, string) {
 }
 
 func sessionReplyMetadata(agent Agent, session AgentSession, workspaceDir string) SessionReply {
-	reply := SessionReply{WorkDir: workspaceDir, Model: replyFooterModel(session, agent)}
+	reply := SessionReply{WorkDir: workspaceDir, Model: replyFooterModel(session, agent), Effort: replyFooterReasoningEffort(session, agent)}
+	if usage := replyFooterSessionContextUsage(session); usage != nil {
+		used := usage.UsedTokens
+		if used <= 0 {
+			used = usage.TotalTokens
+		}
+		reply.Usage = &SessionReplyUsage{InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens, CacheWriteTokens: usage.CacheCreationInputTokens, CacheReadTokens: usage.CachedInputTokens, UsedTokens: used, ContextWindow: usage.ContextWindow}
+	}
 	if session != nil {
 		reply.SessionID = session.CurrentSessionID()
 		if getter, ok := session.(interface{ GetWorkDir() string }); ok && reply.WorkDir == "" {
