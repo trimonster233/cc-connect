@@ -54,6 +54,33 @@ environment while a task runs does not relabel that task's result. External
 reply collectors may set `environment` in their private sync configuration;
 the default is `local`.
 
+## Preserve the terminal directory with a shared server
+
+A Bash wrapper that adds `codex --remote` must also forward the terminal's
+working directory. With Codex 0.167.0, an omitted `--cd` sends `cwd="."` during
+remote configuration loading. The server resolves that path from its own working
+directory, so a server started in the home directory can open projects there
+even when the terminal is in a different directory.
+
+Run this helper where the terminal and app server share the same filesystem paths:
+
+```bash
+python3 contrib/environments/configure_shell.py \
+  --rcfile "$HOME/.bashrc" \
+  --codex-home "$HOME/.codex" \
+  --server-url "unix://$HOME/.codex/app-server.sock" \
+  --name emodia
+source "$HOME/.bashrc"
+```
+
+Use the existing server endpoint and the startup file actually loaded by the
+container shell. The helper defaults to `--cd "$PWD"` at invocation time and
+preserves explicit `-C`/`--cd` arguments. It upgrades the legacy three-line
+`# CC-Connect NAME shared server` block, preserves surrounding settings and the
+initial backup, and is safe to rerun. Include the same command in deployment
+scripts so existing installations receive updates. Reload the startup file or
+open a new shell before starting a new Codex session.
+
 ## Automatic container setup
 
 Unified deployment enables `cc-connect-environments-PROJECT.service`. Every ten
